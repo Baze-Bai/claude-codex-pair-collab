@@ -1,24 +1,31 @@
-<!-- O 填充说明(发送前删除本注释块):Phase 2 r1 盲态并行对审。两侧同时各发一份,互不见对方评审。
-     CA:SendMessage 派活,产出落 {{COLLAB_DIR}}/20_claude_review_r1.md。
-     CB:cb-round.sh resume <讨论会话UUID> …,-o 落 {{COLLAB_DIR}}/21_codex_review_r1.md,加 --require-consensus。
-     {{PEER_PROPOSAL}}=对方原始提案(10_ 或 11_);{{OWN_PROPOSAL}}=自己的提案。 -->
-第 1 轮评审(盲态):独立评审对方的原始提案;互不先看对方评审。你的角色是**质检员,不是辩手**。
+<!-- ENGINE-FILLED (Phase 2 r1, blind symmetric cross-review — both sides at once,
+     neither sees the other's review). Placeholders: COLLAB_DIR, PEER_PROPOSAL,
+     OWN_PROPOSAL, OUT_FILE. One template, filled once per side. -->
+Review round 1 (blind): independently review the counterpart's original proposal; neither side sees the other's review first. Your role is **quality inspector, not debater**.
 
-姿态:无异议的评审=未尽职;你此轮的价值是找出对方方案的遗漏/错误/更优解,不是附和。也点出对方**整块漏掉**的维度(失败路径 / 回滚与恢复 / 并发竞态 / 规模上限 / 安全鉴权 / 数据迁移与向后兼容 / 可观测性,是常见的沉默区)。首轮把审查做透,让问题尽早暴露。**找错≠为反对而反对**:只提实质问题(采纳与否会实际改变方案/分工),凑数的琐碎挑刺同样是未尽职;认真核查后方案若站得住,给出带凭证的 AGREE 同样是尽职产出——勤勉体现在评审正文和补足账本里,不体现在结论是否反对。
+Stance: a review with no findings = a job not done; your value this round is finding the counterpart's omissions / errors / better alternatives, not concurring. Also call out dimensions they left out **wholesale** (failure paths / rollback & recovery / concurrency races / scale ceilings / security & auth / data migration & backward compatibility / observability are the usual silent zones). Do the deep audit in round 1 so problems surface early. **Finding faults ≠ objecting for its own sake**: raise only substantive issues (ones whose adoption would actually change the plan or the task split); padding the review with trivial nitpicks is equally a job not done. If, after honest scrutiny, the proposal stands, an AGREE with credentials is equally diligent output — diligence lives in the review body and the supplement ledger, not in whether the verdict is an objection.
 
-材料(一律读盘原文):
-- 题面:{{COLLAB_DIR}}/00_TOPIC.md
-- 对方提案:{{PEER_PROPOSAL}}
-- 你自己的提案(对照用):{{OWN_PROPOSAL}}
+Materials (always read the files on disk — no relayed summaries):
+- Brief: {{COLLAB_DIR}}/00_TOPIC.md
+- Counterpart's proposal: {{PEER_PROPOSAL}}
+- Your own proposal (for contrast): {{OWN_PROPOSAL}}
 
-评审契约:
-- 逐点回应对方的点(同意/反对/修正)。
-- **补足账本**:一张表 `| # | 对方遗漏/缺陷 | 严重度 | 我补上什么 |`;「我补上什么」精度与方案同层或更细,不确定位置就明说待定,严禁编造看似具体的文件名(假精度比粗精度更有害);硬标准=每条能直接变成 31_TASKS 的一行、且你日后可验收。
-- **证据锚点**:关于现状代码行为的关键断言附 file:line;抽查对方断言的锚点真伪,失实点名。
-- **实证优先**:可由只读实验(现有定向测试、小探针)判定的争点,径行实验并附命令与输出为新事实。
-- 末尾单独一行(裸 AGREE 不合格):
-  `CONSENSUS: OBJECT — <一句话实质分歧(采纳与否会实际改变方案/分工)>`
-  或
-  `CONSENSUS: AGREE — 残余风险:<本方案即便采纳仍最担心的一点;确无则说明为何无>;放弃的最强反对:<我考虑过但未坚持的、对本方案最强的那条反对>`
+Review contract:
+- Respond point-by-point to the counterpart's points (agree / object / amend).
+- **Supplement ledger** — one table: `| # | peer's gap/defect | severity | what I add |`. "What I add" must be at the proposal's altitude or finer: if the proposal names files/interfaces, so does your fix; if it is still design-level, land on module/interface-contract/design-decision and note where it belongs. **If unsure of the location, say "TBD" — never invent a plausible-looking filename; fake precision is worse than coarse precision.** The one hard bar: each row must be directly convertible into a 31_TASKS.md line that you could later accept or reject at review.
+- **Evidence anchors**: key claims about current code behavior carry file:line; spot-check the counterpart's anchors and name any that are false — confident false premises are a shared LLM blind spot, and anchors make them cheaply falsifiable.
+- **Evidence first**: any point decidable by a read-only experiment (existing targeted tests, a small probe) — run it and attach the command + output as new fact; evidence beats argument.
+- Machine-readable dispute declarations, one line starting exactly with `DISPUTES: ` (directly above your CONSENSUS line):
+  - `DISPUTES: none` if you raise nothing and no ledger entries concern you;
+  - otherwise items separated by `; `, each one of:
+    - `new="one-line summary"` — a new dispute you raise this round (the engine assigns its id; no `|` or `;` characters inside the text);
+    - later rounds may also use `dN=open | dN=addressed | dN=confirm-closed | dN=withdrawn` against ids in {{COLLAB_DIR}}/25_disputes.md — authority is enforced mechanically: only a dispute's proposer can confirm-close or withdraw it; only the other side can mark it addressed.
+  Every `new=` item must correspond to a substantive point argued in your review body.
+- End with a single line (a bare AGREE is malformed):
+  `CONSENSUS: OBJECT — <one sentence: the substantive disagreement (adopting it would actually change the plan or the task split)>`
+  or
+  `CONSENSUS: AGREE — residual-risk: <the one thing you still fear most even if this plan is adopted; if truly none, say why>; dropped-objection: <the strongest objection you considered but chose not to press>`
 
-r1 不产融合草案。
+r1 produces no fusion draft.
+
+Delivery & write scope: the deliverable lands at {{OUT_FILE}} — your ONLY legitimate write target this round; the rest of the repo is read-only to you this round. If you are CA, write that file yourself and give O a one-line summary in your reply. If you are CB, you write no files (your sandbox enforces this): your final reply body IS the deliverable — it will be saved as that file; no appended questions or pleasantries.

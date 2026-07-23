@@ -1,18 +1,21 @@
-<!-- O 填充说明(发送前删除本注释块):Phase 3 定稿复读,两侧各发一份(CA 经 SendMessage / CB 经 cb-round.sh resume 讨论会话,加 --require-consensus)。
-     两行复读 CONSENSUS 由 O 原文追加到 30_PLAN.md 末尾。
-     一侧 OBJECT 指出漂移 → O 逐条修回后重走本复读(属 O 保真义务,不计 Phase 2 轮次)。 -->
-共识已由 O 固化。`30_PLAN.md` 走的是**融合草案基底版**——以最后一版融合草案正文为骨架**搬运**(保留原文措辞),把其后各轮新增的共识作**标注归属的追加**,删掉过程标记,补最小背景。**O 不重述、不摘要**;所以你要查的不是「O 转述得对不对」,而是**搬全了没有**。
+<!-- ENGINE-FILLED (Phase 3 readback — both sides in parallel, each fills once).
+     Placeholders: COLLAB_DIR, OUT_FILE. The finalize was authored by the PENNER
+     (a worker, not O); the readback audits the penner's carry fidelity. On PASS the
+     engine appends both CONSENSUS lines verbatim to 30_PLAN.md as the sign-off. -->
+The consensus has been finalized into {{COLLAB_DIR}}/30_PLAN.md and {{COLLAB_DIR}}/31_TASKS.md by the **finalize penner** (the engineer who wrote the last fusion draft) under a carry-don't-regenerate contract: fusion draft as body, later confirmed additions appended with attribution, process markers settled per the dispute ledger, risks carried verbatim. O added nothing beyond mechanics.
 
-请**通读整份** {{COLLAB_DIR}}/30_PLAN.md 与 {{COLLAB_DIR}}/31_TASKS.md(不只你负责的那片),按四问核对:
+**Read both documents IN FULL** (not just your own slice) and check four questions:
 
-1. **有没有漏搬** —— 融合草案 / 各轮评审里**已同意**的内容,有没有没进 PLAN/TASKS 的?
-2. **有没有被压缩** —— 已同意的**验收标准 / DoD 约束**有没有被摘成一句话概要而丢掉实质?(PLAN/TASKS 就是实施依据,DoD 不能靠实施者回头翻评审文件补)
-3. **有没有被加料** —— 有没有出现**未经共识**的内容?(尤其:O 的建议被写成「默认」;owner/分工必须标注为待用户批准的未决执行决策)
-4. **有无新增的阻断性风险**;评审里的**残余风险**是否逐条原样带入 PLAN 风险节(**未被合并**——两条风险指向不同失败模式时合并即失真)。
+1. **Omission** — is anything that was agreed (in the fusion draft, in accepted supplements, in later confirmed additions) missing from PLAN/TASKS?
+2. **Compression** — were agreed **acceptance criteria / DoD constraints** summarized into a one-liner that drops substance? (PLAN/TASKS are the implementation basis; the implementer will not re-read review files to recover them.)
+3. **Addition** — does anything appear that was **never consensused**? (Especially: a task owner or implementation mode written as settled — those are undecided execution decisions pending user approval; and any penner preference smuggled in as a settled decision.)
+4. **New blocking risks** — and are the residual risks from AGREE credentials carried verbatim, one per line, **unmerged** (two risks pointing at different failure modes merge into falsehood)?
 
-**你的视角与对方互补,两边都要查**:若你是融合草案执笔方,重点查「我写的完整约束有没有被摘丢」;若你是后手,重点查「我补的内容与立场有没有被带入」。(实战教训:只有前者抓出过漂移,后者容易全说「无漂移」。)
+Perspectives differ by role and both matter: if you are the **second mover** (not the penner), your accepted supplements and positions are the likeliest omission victims, and you are the natural adversarial checker for additions — check both hard (battle lesson: the non-author side historically rubber-stamps; do not). If you are the **penner**, verify the mechanical carry of your own constraints (nothing lost in integration or splitting) and re-check your DoD completeness with fresh eyes.
 
-有问题指出**具体条目**;没有问题也要给凭证。末尾单独一行:
-`CONSENSUS: OBJECT — <PLAN 哪一处漏搬/被压缩/被加料/新增了什么风险>`
-或
-`CONSENSUS: AGREE — 残余风险:<…>;放弃的最强反对:<…>`
+Name **specific items** when objecting; a clean pass also needs credentials. No DISPUTES line in this task (drift routes through OBJECT → the fix loop, not the ledger). End with a single line:
+`CONSENSUS: OBJECT — <which specific spot was omitted / compressed / added / which new blocking risk>`
+or
+`CONSENSUS: AGREE — residual-risk: <...>; dropped-objection: <...>`
+
+Delivery & write scope: the deliverable lands at {{OUT_FILE}} — your ONLY legitimate write target this round; the rest of the repo is read-only to you this round. If you are CA, write that file yourself and give O a one-line summary in your reply. If you are CB, you write no files (your sandbox enforces this): your final reply body IS the deliverable — it will be saved as that file; no appended questions or pleasantries.

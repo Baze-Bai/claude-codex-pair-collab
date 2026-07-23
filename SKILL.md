@@ -1,218 +1,254 @@
 ---
 name: pair-collab
-description: Claude × Codex 双智能体结对协作编排。发起会话充当中立 Orchestrator(不下场编码),派生一个 Claude subagent 当工程师 A、驱动 Codex 当工程师 B;两个对称 worker 先各自独立提案,再交叉评审收敛成共识,经用户批准后默认由单一 owner 实现、另一方全量审查(低耦合赶工期时才双开互审),O 集成验证。用法:/pair-collab <主题>。
-argument-hint: <主题描述>
+description: Claude × Codex dual-agent pair collaboration, driven by a deterministic round engine. The invoking session acts as neutral Orchestrator (never codes, holds no technical position); a Claude worker (headless CLI or subagent) is Engineer A, headless Codex is Engineer B. Both workers propose independently, then cross-review to consensus under engine-managed rounds; after user approval a single owner implements and the other side audits the full diff (dual-track only for low-coupling deadline work); O runs integration verification. Usage: /pair-collab <topic>.
+argument-hint: <topic description>
 ---
 
-# Claude × Codex 结对协作协议
+# Claude × Codex Pair Collaboration Protocol (engine-driven)
 
-## 角色与架构
+## Roles & architecture
 
-三方,职责严格分离:
+Three parties plus one mechanism, with strict separation of duties:
 
-- **Orchestrator(O)= 发起本 skill 的这条会话**。**中立编排者,不下场编码、不持技术立场**。唯一与用户对话的接口。
-- **工程师 A(CA)= O 派生的 Claude subagent**(`general-purpose`,后台运行)。只 focus 主题。
-- **工程师 B(CB)= Codex CLI 会话**(`codex exec` 无头调用)。只 focus 主题。
-- **用户 = 出题人 + 仲裁者**,常规流程只在「方案批准」和「真分歧裁决」两个节点介入(异常与收尾另有触点,见各节)。
+- **Orchestrator (O) = the session that invoked this skill.** Neutral coordinator — never codes, holds no technical position. The only interface that talks to the user.
+- **Engineer A (CA) = a Claude worker** — a headless `claude -p` CLI session (route B, fully script-driven) or an O-spawned subagent (relay mode); see "Driving Engineer A". Focuses only on the topic.
+- **Engineer B (CB) = a Codex CLI session** (headless `codex exec`). Focuses only on the topic.
+- **The round engine (`scripts/collab-engine.sh`) = a deterministic state machine** covering the happy path of Phases 1–3: it infers state from the collab dir, fills prompts from templates mechanically, prints the exact launch/relay actions for O, prechecks outputs at the formal layer, applies the dispute ledger under authority rules, and emits structured receipts with verbatim excerpts. It never calls an LLM and never judges merit.
+- **The user = problem-setter + arbiter**; in the normal flow they act only at "plan approval" and "genuine-dispute ruling" (exceptions and wrap-up have extra touchpoints, see the relevant sections).
 
-**O 做**:开题、派活/传话、判定 `CONSENSUS`、把收敛的共识固化成 PLAN/TASKS、划分工、执行规则(双开时文件集不相交/用户闸门)、**亲自跑集成测试**(中立验收)、写总结。
-**O 不做**:不写提案、不做评审表态、不编码实现、不替任一 worker 做技术决策。
+**O does**: open the topic (00_TOPIC); run engine commands and execute the two dumb actions it prints (relay a pointer to CA; launch a cb-round command in background Bash); make the **semantic verdicts** the engine cannot (hollow-AGREE / non-substantive-OBJECT calls, declaration-vs-body consistency audits, stall detection, escalation packaging); handle every exception and degraded path; enforce execution rules (disjoint file sets in dual-track mode, user gates); **run integration tests personally** (neutral acceptance); assemble the approval package; write the summary.
+**O does not**: write proposals, take review positions, implement code, make technical decisions for either worker, hold the pen on consensus substance (the finalize penner writes PLAN/TASKS), transcribe content between workers (materials are always file paths; the engine carries excerpts verbatim), or declare any dispute resolved (parties declare; the engine records; O audits).
 
-**中立性(本架构的核心价值)**:O 的中立是**技术立场中立**——不判谁的方案对、不替某方压掉另一方,方案对错只由「双方 AGREE」或「用户裁决」决定。但中立**不等于**放任质量:O 同时负责**程序质量把关**。据此授权 O:某轮(尤其 r1)若出现「空心全同意」(无任何反对/修正条目、不引用具体文件、`CONSENSUS` 凭证栏留空),O 有权**一次性**退回要求补齐再判定(**量纲:每份产出至多退回一次**,补交后无论质量如何径行按判定规则处理,不二次退回;退回不消耗轮次,重做仍记同一轮)——这是查形式、不判对错,与技术中立相容。形式退回权对两种表态**对称**:格式不合格的 OBJECT(未写明采纳与否会改变方案/分工的哪一处)与凭证栏留空同等对待,一并适用。**「r1 双 AGREE 且反对为空」是需退回的红旗,不是好兆头。** 这消除了旧设计里「主持人兼工程师 A = 裁判下场当选手」的结构性偏差。
+**Neutrality (the core value of this architecture)**: O's neutrality is **technical-position neutrality** — O never judges whose design is right and never crushes one side for the other; correctness is decided only by "both sides AGREE" or a user ruling. But neutrality is **not** quality laissez-faire: O also owns **procedural quality control**. Accordingly O holds a one-time return right per deliverable: if a round (especially r1) produces a "hollow full-agreement" (no objection or amendment items, no concrete file references, empty `CONSENSUS` credential slots), O may return it **once** for completion before applying the verdict rules (**quota: at most one return per deliverable**; after resubmission the verdict rules apply as-is regardless of quality — no second return; a return does not consume a round, the redo stays in the same round). This checks form, never merit, and is compatible with technical neutrality. The return right is **symmetric** across both stances: a malformed OBJECT (failing to state which part of the plan or task split its adoption would change) is treated identically to empty AGREE credentials. **"r1 double-AGREE with an empty objection column" is a red flag requiring a return, not a good sign.** The engine mechanizes the *detection* (RETURN-CANDIDATE flags with verbatim excerpts in the receipt); the *call* stays with O. This design removed the old structural bias of "host doubling as Engineer A = referee playing the match".
 
-全程用中文与用户沟通,collab 文档也用中文写(代码与命令保留英文)。
+Communicate with the user in the user's language throughout; collab documents follow the user's working language (code and commands stay in English).
 
-## 工作区约定
+## Workspace layout
 
-每个主题一个目录:`collab/<YYYYMMDD>-<slug>/`(repo 根下,建议加入 `.git/info/exclude` 排除,不污染 git status)。产出物标注归属:
+One directory per topic: `collab/<YYYYMMDD>-<slug>/` (repo root; recommended: exclude it via `.git/info/exclude` so it never pollutes git status). Deliverables are attributed:
 
 ```
 collab/<date>-<slug>/
-├── 00_TOPIC.md                # O 写:主题、约束、代码入口、验收标准
-├── 10_claude_proposal.md      # CA 产出:Claude 侧独立提案
-├── 11_codex_proposal.md       # CB 产出:Codex 侧独立提案
-├── 20_claude_review_r1.md     # CA 产出:评审轮次(r1..rN,N≤10)
-├── 21_codex_review_r1.md      # CB 产出
-├── 25_disputes.md             # O 写:分歧+修正案台账(每条一行,状态机;修正案编 A1/A2…)
-├── 30_PLAN.md                 # O 写:共识方案(**融合草案基底版**=搬运+追加+定态化,非重述;末尾附定稿复读与用户批准记录)
-├── 31_TASKS.md                # O 写:分工表
-├── 40_codex_worklog.md        # CB 产出:实现日志(owner=CB 或双开时产出)
-├── 41_claude_worklog.md       # CA 产出:实现日志(owner=CA 或双开时产出)
-├── 50_claude_reviews_codex.md # CA 产出:审 CB 的 diff(owner=CB 或双开时产出;复核/驳回追加写回)
-├── 51_codex_reviews_claude.md # CB 产出:审 CA 的 diff(owner=CA 或双开时产出;复核/驳回追加写回)
-├── 90_SUMMARY.md              # O 写:总结
-├── baseline.txt               # O 写:Phase 4 开工基线(stash SHA + porcelain 快照)
-├── agents.txt                 # CA 的 agentId / CA 独立会话 sessionId
-├── codex_sessions.txt         # CB 会话 ID(discussion / implementation;首行注释记 codex --version)
-├── prompts/                   # 所有派活 prompt + .log 存档,命名含阶段轮次(ca-pNrM.md / codex-pNrM.md)
-└── .locks/                    # cb-round.sh 的 per-UUID 单写者锁(正常态为空)
+├── 00_TOPIC.md                # O: topic, constraints, code entry points, acceptance criteria
+├── 10_claude_proposal.md      # CA: independent proposal
+├── 11_codex_proposal.md       # CB: independent proposal
+├── 20_claude_review_r1.md     # CA: review rounds (r1..rN, N≤10)
+├── 21_codex_review_r1.md      # CB: review rounds
+├── 25_disputes.md             # ENGINE-maintained dispute ledger (authority-checked; O audits)
+├── 30_PLAN.md                 # FINALIZE PENNER: definitive consensus plan (readback sign-off appended)
+├── 31_TASKS.md                # FINALIZE PENNER: task split table
+├── 32_finalize_combined.md    # CB-penner only: combined finalize output before the engine splits it
+├── 35_claude_readback.md      # CA: readback verdict
+├── 36_codex_readback.md       # CB: readback verdict
+├── 40_codex_worklog.md        # CB: implementation log (owner=CB or dual-track)
+├── 41_claude_worklog.md       # CA: implementation log (owner=CA or dual-track)
+├── 50_claude_reviews_codex.md # CA: audit of CB's diff (re-checks/rejections appended back)
+├── 51_codex_reviews_claude.md # CB: audit of CA's diff (re-checks/rejections appended back)
+├── 90_SUMMARY.md              # O: summary
+├── baseline.txt               # O: Phase 4 baseline (stash SHA + porcelain snapshot)
+├── opening_snapshot.txt       # ENGINE: git-porcelain snapshot at first engine touch (write-sentinel baseline)
+├── agents.txt                 # CA agentId / independent-session sessionId
+├── codex_sessions.txt         # CB session UUIDs (discussion / implementation; first line logs codex --version)
+├── claude_sessions.txt        # headless-CA session UUIDs (same key=uuid format; its presence selects the headless carrier)
+├── prompts/                   # every dispatched prompt + .log, named by phase/round (ca-pNrM.md / codex-pNrM.md)
+├── receipts/                  # ENGINE: structured per-round receipts (phase1 / rN / finalize / readback)
+├── readback_archive/          # ENGINE: objected readbacks + drifted PLAN/TASKS per fix attempt
+└── .locks/                    # cb-round.sh per-UUID single-writer locks (empty in normal state)
 ```
 
-**每份 worker 产出既要落盘到对应文件**(供用户查看、O 归档、O 会话中断后恢复上下文),**又要在回执里给 O 一句话摘要**。
+Every worker deliverable **lands in its collab file** (user-visible, O-archivable, recovery source after O-session loss) **and** carries a one-line summary back to O in the reply.
 
-**配套工具(skill 自带)**:`.claude/skills/pair-collab/scripts/cb-round.sh` 是 CB 调用的默认入口(封装 stdin 姿势/tee 日志/抓 id/单写者锁/形式预检);`.claude/skills/pair-collab/templates/` 是派活 prompt 底稿(ca-first / cb-first / review-r1 / review-conv / amendment-round / plan-readback / impl-task / impl-review),填占位符、删头部注释块后存 `prompts/` 再发送。**契约文字的规范源是本 SKILL,模板是操作载体——改契约须同步模板。**脚本故障时降级为「驱动工程师 B」节的原始命令。
+**Tooling (bundled with the skill)**: `scripts/collab-engine.sh` is the default driver for Phases 1–3 (see "The round engine"); `scripts/cb-round.sh` and `scripts/ca-round.sh` are the call-layer wrappers for CB and headless-CA invocations (stdin posture / tee log / session registration / single-writer lock / formal precheck) — the engine prints their commands rather than executing them, so the harness keeps background-task tracking and completion notifications. `templates/` holds the prompt stock (engine-filled: ca-first / cb-first / review-r1 / review-conv-penner / review-conv-second / plan-finalize-ca / plan-finalize-cb / plan-readback; O-filled manual: amendment-round / impl-task / impl-review). **The normative source of contract wording is this SKILL; templates and engine are carriers — a contract change must be synced to them.** If a script misbehaves, degrade to the manual flow (templates filled by hand + the raw commands in "Driving Engineer B").
 
-## 驱动工程师 A(Claude)
+## The round engine
 
-### 主模式:subagent(默认)
+```
+bash .claude/skills/pair-collab/scripts/collab-engine.sh status  <collab-dir>
+bash .claude/skills/pair-collab/scripts/collab-engine.sh advance <collab-dir> [--penner ca|cb] [--accept-hollow]
+bash .claude/skills/pair-collab/scripts/collab-engine.sh collect <collab-dir>
+```
 
-O 用 `Agent` 工具派生**一个** CA,全程(提案→评审→实现或审查)复用它——subagent 记忆连续,无需像 Codex 那样分沙箱建两条。
+- **State lives on disk only.** The engine infers phase/round/penner from which files exist and re-derives everything on each call; it keeps no state of its own and is idempotent (`advance` re-prints instructions without overwriting existing prompt files — delete a prompt file to force regeneration; re-run a round's `collect` by deleting its receipt).
+- **`advance`** = prepare the next step: fill the templates whose placeholders are all mechanically derivable (round number, penner by parity, file lists, ledger path), then print **O's two dumb actions**: the CA action (headless carrier: an exact ca-round command; subagent carrier: the spawn/relay instruction) and the exact cb-round command. O executes both **in the same message** when they are parallel (Phase 1, r1, readback). Dumb means zero authorship: O never drafts prompt content on the happy path. The CA carrier is selected by `claude_sessions.txt` presence (headless) — pass `--ca headless` on the first advance to start a topic in route B before that file exists.
+- **`collect`** = after the awaited outputs land: formal precheck (CONSENSUS line present and well-formed, AGREE credential slots non-empty, supplement-ledger table present, file:line anchor count; defects → RETURN-CANDIDATE flags), parse the `DISPUTES:` declarations, apply them to `25_disputes.md` **under authority rules**, and emit a receipt to stdout + `receipts/` containing **verbatim excerpts** (CONSENSUS lines, DISPUTES lines, ledger diff, flags) — excerpts, not paraphrase, so O's semantic judgment reads original text without O re-reading whole files (and without a paraphrase channel). `collect` also runs the **write sentinel**: the worktree's `git status --porcelain` is compared against `opening_snapshot.txt` (recorded automatically at the engine's first touch); any new change is flagged in the receipt — discussion phases must leave the repo untouched, and collab/ is git-excluded so legitimate deliverables never trigger it. Detection, not prevention: the flag may equally be the user's own editing, so O verifies before invoking the off-track procedure.
+- **Verdict split**: the engine decides only what a grep can decide (line present? slot non-empty? both AGREE?). O decides everything semantic: is an AGREE hollow despite non-empty slots; is an OBJECT substantive; does a DISPUTES declaration match what the review body argues (identity drift); is the process stalled. On formal defects the engine refuses to advance until O either returns the deliverable (once) or passes `--accept-hollow`.
+- **Sequencing enforced**: `advance` refuses to prepare round N+1 until round N's `collect` has run — the next round's prompts reference the ledger, so bookkeeping must land first. Within r2+ the penner goes first, the second mover after the draft lands; r1 and readback are parallel.
+- **Engine scope (step 1)**: Phases 1–3 happy path, ending at the user gate. Phase 0 is O's own writing; Phases 4–7 stay on the manual flow below. Every exception path (CB call failure, off-track worker, resume loss, amendments) is O's, not the engine's — the engine stops and reports rather than guessing.
 
-- **派生(Phase 1 首次)**:`Agent(subagent_type: "general-purpose", run_in_background: true, ...)`。首条 prompt **自包含**:角色(「你是与 Codex 结对的工程师 A,由中立 Orchestrator 协调」)、collab 文件路径、任务、输出契约、硬约束。记下返回的 **agentId → `agents.txt`**。
-- **后续轮次**:`SendMessage(to: <agentId>, message: 派活)`——自动送达、自动响应、完成通知 O(by-id 续跑,记忆延续)。每轮派活 prompt 以 `templates/` 对应模板为底稿,先 Write 存 `prompts/ca-pNrM.md` 再发送(与 CB 同规,派活史落盘可恢复)。
-- **硬约束(写进首条 prompt)**:只允许碰 `31_TASKS.md` 里划给 Claude 侧的文件;禁止 `git add/commit/push`;禁止装/升级依赖;只跑自己任务的定向测试,禁止全量套件;每轮产出落盘对应 collab 文件 + 回执给一句话摘要;评审/审查轮**末尾必须单独一行**,且 **AGREE 也有成本(裸 `AGREE` 不合格、会被 O 退回)**:
-  - `CONSENSUS: OBJECT — <一句话实质分歧(采纳与否会实际改变方案/分工)>`,或
-  - `CONSENSUS: AGREE — 残余风险:<本方案即便采纳仍最担心的一点;确无则说明为何无>;放弃的最强反对:<我考虑过但未坚持的、对本方案最强的那条反对>`。
-- **并发**:CA 后台跑,与 CB 的后台任务真正并行(Phase 1 两侧同时提案、r1 两侧同时盲审;Phase 4 仅双开模式下两侧同时实现)。
-- **文件防抢**(双开模式才触发;单 owner 默认下同一时刻只有一侧写代码):CA(共享 O 工作树)与 CB(`workspace-write` 同工作树)改的是同一份工作树 → 靠「文件集不相交」规则防冲突(见 Phase 3);默认**不**用 worktree 隔离(会让 CA 改动落在独立工作树、增加 O 集成合并成本),仅当同文件确需并行改写时才对 CA 加 `isolation: "worktree"`。
-- **局限**:CA subagent 生命周期绑 O 会话;**O 会话结束/中断则 CA 消失**,需重新 `Agent()` 派生,靠 collab 文件恢复上下文(agentId 失效,更新 `agents.txt`)。
+**O's per-round loop in Phase 2** (the whole job on the happy path): `advance` → execute the printed CA + CB launches in one message → wait for completion notifications → `collect` → read the receipt excerpts and make the semantic call (return / accept / continue) → `advance`. Every round's receipt goes to the user as a one-screen digest if they are watching.
 
-### 备选模式:独立顶层会话
+## Driving Engineer A (Claude)
 
-**仅当用户明确要 CA 是"能单独打开的会话",或要继承一条既有 Claude 会话当 CA 时启用。** 代价:半自动、O 无法全自动编排(已与用户确认取舍)。
+Three carriers; contracts identical across all of them. Carrier-neutral facts first:
 
-- 派活:`mcp__ccd_session_mgmt__send_message(session_id, message)`——**每轮弹用户确认**,且那条 CA 会话**须自身有活跃进程消费消息**(空闲会话不会自动醒来干活)。
-- 回执:CA 会话干完**写 collab 文件**,O **轮询文件**收产出(可用 `Monitor` 或定时 Read);不靠反向 send_message(又一次确认)。
-- 记 CA 的 **sessionId → `agents.txt`**。其余流程契约(落盘、CONSENSUS 行、文件不相交)完全一致。
+- **Two-layer constraint model** (constraints are dispatched progressively, not front-loaded): the first prompt carries only the **identity layer** — role/topology plus the permanent bans (no `git add/commit/push`; no dependency installs/upgrades; targeted tests and read-only probes only, never the full suite; every deliverable lands in its collab file + one-line summary) and the note that each round's write scope and output contract arrive with that round's prompt. Everything phase-specific is **stated per round**: every engine-generated prompt declares that round's **write scope** ("your ONLY legitimate write target this round is <the round's deliverable file(s)>") plus the full format contract (CONSENSUS credentials, DISPUTES line). The scope widens only in Phase 4 (the owner's assigned file set + worklog) and narrows again in Phase 5 (the review file). Rationale: per-round restatement survives context compression, avoids referencing files that don't exist yet, and keeps every rule a simple present-tense instruction.
+- **Enforcement honesty**: CA's write scope is contract + the engine's write sentinel + the off-track baseline-restore procedure — not an OS wall (CA needs Write for its own deliverables, and any carrier could exceed it); CB's read-only discussion sandbox is the only mechanically enforced side. The headless carrier adds a real *tool*-surface wall (pinned permission mode + deny list, measured effective even against a bypassPermissions user config — see Carrier 1) but no *path*-surface wall; the subagent carrier has neither (it inherits O's session permission config verbatim). State this to the user when it matters.
+- **Delivery**: CA Writes its deliverable files itself in every carrier; its reply/stdout is only the one-line summary.
+- **Concurrency**: CA runs in the background, genuinely parallel with CB's background task (Phase 1 both proposals, r1 both blind reviews, readback both sides; Phase 4 both sides only in dual-track mode).
+- **File-clash guard** (dual-track only; in the single-owner default only one side writes code at a time): CA (shares O's worktree) and CB (`workspace-write`, same worktree) rely on the "disjoint file sets" rule (see Phase 3); no worktree isolation by default (it would strand CA's changes in a separate tree and raise O's integration cost) — add `isolation: "worktree"` for CA only when the same file genuinely needs parallel edits (subagent carrier only).
 
-## 驱动工程师 B(Codex)
+### Carrier 1: headless CLI (route B — engine-native, fully script-driven)
 
-**前提**:Codex CLI 已安装并登录(npm 全局 `@openai/codex`;**主题进行中不升级 Codex CLI**,防 resume 版本漂移),与 Codex 桌面 App 共享 `~/.codex`——**登录态与会话库同一份**(`~/.codex/sessions/` + `session_index.jsonl`)。
+CA becomes a `claude -p` process, structurally symmetric to CB: sessions persist on disk in `~/.claude` per-cwd project buckets, driven via `scripts/ca-round.sh` (new/resume, per-UUID single-writer lock, tee log, formal precheck), UUIDs in `claude_sessions.txt`. The engine prints ready-to-run ca-round commands; O launches them in background Bash — **O's in-presence dependency (the dumb relay) is gone**: both sides are CLI launches in one message, and an O session death no longer kills CA (resume the recorded UUID).
 
-**每主题固定两条 Codex 会话**,ID 记 `codex_sessions.txt`(`discussion=<uuid>` / `implementation=<uuid>`):
+- **Auth prerequisite (one-time, user-performed)**: the STANDALONE Claude CLI must be authenticated — desktop-app-hosted auth does **not** reach a nested `claude -p` (measured 2026-07-22: host-managed OAuth, `.credentials.json` empty → instant "Not logged in", ca-round exit 8). Fix: the user runs `claude setup-token` once and stores the result as the `CLAUDE_CODE_OAUTH_TOKEN` **User-scope env var** (setup-token's mechanism; it does not write the credential file). Long-lived parent sessions started before the var existed don't inherit it — ca-round auto-loads it from the User registry scope when absent (measured: works; the value is never printed and never reaches the .log). Never handle the credential value yourself.
+- **Session model**: ca-round **mints the UUID itself** and pins it via `--session-id` (measured: pinning works; no banner parsing needed); later rounds `--resume <uuid>`. Always launched from the repo root so create and resume hit the same project bucket. One discussion session per topic (`discussion=<uuid>`); a Phase 4 implementation session would be separate (manual phase; owner=CA implementation currently stays on the subagent carrier).
+- **Permissions (measured 2026-07-22)**: the nested CLI **inherits user/project settings**, and on a machine whose user settings carry `defaultMode: bypassPermissions` + a bare `Bash` allow rule, `--allowedTools` alone is a no-op (echo probe executed). ca-round therefore pins **`--permission-mode default`** (the CLI flag beats the settings' defaultMode) **plus an explicit `--disallowedTools` deny list** for the identity-layer ban categories (git mutations, installs, rm/mv) — **deny beats every allow rule** (ground-truth verified: `rm` and `git add -A` denied with the marker file surviving and the index untouched, while whitelisted `git log` ran). Allow list = deliverable writing + read-only probes works even on a bare machine; deny list holds even on a fully-opened machine. `CA_ALLOWED_TOOLS` / `CA_DISALLOWED_TOOLS` env to adjust per topic. **Never `--permission-mode bypassPermissions` / `--dangerously-skip-permissions`.** Note the asymmetry this creates: a subagent CA inherits O's session config (on such machines = bypass, no counter available), so the headless carrier is now the *strictest* CA carrier, not the loosest.
+- **Model pinning**: assume model/effort do NOT persist across resume (the measured CB trap, unmeasured here) — pin via `CA_MODEL` env, applied on every call.
+- **Posture**: prompts fed via stdin `< promptfile` always (without it the CLI waits 3s for piped stdin; PowerShell background runs are banned same as CB); calls run in background Bash.
+- **Field-verification status (live三连 passed 2026-07-22)**: nested launch, `--session-id` pinning, auth auto-load, **resume memory continuity** (exact passphrase recall across resume), Write landing + precheck + lock lifecycle, and **whitelist/deny efficacy with ground truth** are all measured green. The one thing only a real topic can prove is **long-run background stability** — headless is therefore **the default CA carrier**; watch the first real topic's receipts for stability, and fall back to the subagent carrier per the failure ladder if it misbehaves.
 
-- **讨论会话**(`read-only` 沙箱):Phase 1 首轮创建;Phase 2 评审、Phase 3 定稿复读、Phase 5 审 CA 的 diff 全部 resume 它。
-- **实现会话**(`workspace-write` 沙箱):Phase 4 首个实现调用创建;实现轮与修复轮 resume 它。
+### Carrier 2: subagent (relay mode — fallback)
 
-分两条的原因:`codex exec resume` 无 `-s`/`-C` 参数,**沙箱随会话持久化(2026-07-20 实测:workspace-write 建会话→裸 resume 仍 workspace-write [workdir,/tmp,$TMPDIR])**,读写分离最干净(切沙箱的逃生门 `-c sandbox_mode="workspace-write"` 仍未实测,慎用)。**与沙箱相反,model 与 reasoning effort 不随会话持久:每次调用(含 resume)都从 config.toml+CLI flags 重解析**(同日实测:建会话 effort=low,裸 resume 回落 config 默认 xhigh;resume 有一等 `-m`,也吃 `-c model_reasoning_effort=`)——据此 `cb-round.sh` 每次调用(含 resume)都显式下发 `-m` 与 `-c model_reasoning_effort=`(默认 **gpt-5.6-sol** / **xhigh**,即 skill 为 CB 设的默认档,env `CB_MODEL` / `CB_EFFORT` 可覆盖),把模型与 effort 一并钉住:用户中途改 App/config 默认不再会让进行中主题悄悄换档。主题若覆盖了任一默认,须**每轮保持**(per-topic 设一次 env,或走原始命令时每次显式带 flag)。`-s workspace-write` 主路径:flag 接受、策略生效、随 resume 持久均已实测;**尚未实测的只剩模型真实写盘,「创建即冒烟」保留**(见 Phase 4)。
+O spawns **one** CA with the `Agent` tool and reuses it for the whole topic — subagent memory is continuous.
 
-**默认经 `scripts/cb-round.sh` 调用**(`new`/`resume` 两模式:统一 stdin 姿势与日志、抓取并登记 session id、首次 `new` 顺带把 `codex --version` 记进 `codex_sessions.txt`、`resume` 以 per-UUID 锁强制单写者、产出过形式预检、每次调用显式钉模型与 effort——默认 `gpt-5.6-sol` / `xhigh`,env `CB_MODEL` / `CB_EFFORT` 覆盖)。下方原始命令是脚本封装的底层事实,也是脚本故障时的降级路径。
+- **Spawn (first Phase 1 advance)**: `Agent(subagent_type: "general-purpose", run_in_background: true, ...)`. The first message must be **self-contained** — paste the FULL content of the engine-generated `prompts/ca-p1.md`, not a pointer. Record the returned **agentId → `agents.txt`**.
+- **Later rounds**: `SendMessage(to: <agentId>, message: <the relay line printed by advance>)` — a fixed one-line pointer ("read and execute <prompt-file>"); CA reads the prompt from disk, so no content passes through O's token stream (zero-drift relay). By-id continuation keeps memory.
+- **Limitation**: the subagent's lifetime is bound to O's session; **if O's session ends, CA vanishes** — re-spawn via `Agent()` and rebuild context from the collab files (agentId invalidates; update `agents.txt`). This is the in-presence tax route B removes.
 
-**创建会话(每条会话首次调用),捕获 session id:**
+### Carrier 3: independent top-level session (user-facing fallback)
+
+**Only when the user explicitly wants CA to be "a session they can open", or wants to inherit an existing Claude session as CA.** Cost: semi-automatic; O cannot fully orchestrate (confirm the trade-off with the user).
+
+- Dispatch: `mcp__ccd_session_mgmt__send_message(session_id, message)` — **pops a user confirmation every round**, and the CA session **must itself have an active process consuming messages** (an idle session does not wake up to work).
+- Return: the CA session writes the collab file when done; O **polls the file** (Monitor or timed Read); no reverse send_message (another confirmation).
+- Record CA's **sessionId → `agents.txt`**. All other contracts (file landing, CONSENSUS/DISPUTES lines, disjoint file sets) unchanged.
+
+## Driving Engineer B (Codex)
+
+**Prerequisite**: the Codex CLI is installed and logged in (npm global `@openai/codex`; **never upgrade the Codex CLI mid-topic** — resume version drift), sharing `~/.codex` with the Codex desktop App — **login state and session store are the same** (`~/.codex/sessions/` + `session_index.jsonl`).
+
+**Two fixed Codex sessions per topic**, UUIDs recorded in `codex_sessions.txt` (`discussion=<uuid>` / `implementation=<uuid>`):
+
+- **Discussion session** (`read-only` sandbox): created by the first Phase 1 call; Phase 2 reviews, Phase 3 finalize/readback, Phase 5 diff audits all resume it.
+- **Implementation session** (`workspace-write` sandbox): created by the first Phase 4 implementation call; implementation and fix rounds resume it.
+
+Why two: `codex exec resume` has no `-s`/`-C` flags — **the sandbox persists with the session** (measured 2026-07-20: create under workspace-write → bare resume stays workspace-write [workdir, /tmp, $TMPDIR]), so read/write separation is cleanest (the sandbox-switch escape hatch `-c sandbox_mode="workspace-write"` remains unmeasured; avoid). **Unlike the sandbox, model and reasoning effort do NOT persist: every call (including resume) re-parses config.toml + CLI flags** (measured same day: session created at effort=low, bare resume falls back to the config default xhigh; resume takes first-class `-m` and honors `-c model_reasoning_effort=`) — therefore `cb-round.sh` passes `-m` and `-c model_reasoning_effort=` explicitly on **every** call, resume included (defaults **gpt-5.6-sol** / **xhigh** = the skill's CB defaults, overridable via the `CB_MODEL` / `CB_EFFORT` env vars), pinning both against config drift: a mid-topic change of the user's App/config default no longer silently swaps the model under a live topic. If a topic overrides either, keep the override on **every** round (set the env vars once per topic, or restate the flags on every raw call). `-s workspace-write` main path: flag accepted, policy effective, persists across resume — all measured; **the only unmeasured piece is real file writes by the model, so the "create = smoke test" step stays** (see Phase 4).
+
+**Default entry: `scripts/cb-round.sh`** (`new`/`resume`: uniform stdin posture and logging, session-id capture and registration, first `new` also logs `codex --version` into `codex_sessions.txt`, per-UUID single-writer lock on resume, formal precheck of outputs, explicit model + reasoning-effort pin on every call — defaults `gpt-5.6-sol` / `xhigh`, override via `CB_MODEL` / `CB_EFFORT`). The engine prints ready-to-run cb-round commands; O launches them in background Bash. The raw commands below are the facts under the wrapper and the fallback when it breaks.
+
+**Create a session (first call of each session), capturing the session id:**
 
 ```bash
-# Bash 工具(必须;PowerShell 后台跑会因 stdin 未关永久卡死)
+# Bash tool (mandatory; PowerShell background runs hang forever on un-closed stdin)
 codex exec -C "$(git rev-parse --show-toplevel)" -s read-only -m gpt-5.6-sol -c model_reasoning_effort=xhigh \
   -o "collab/<slug>/11_codex_proposal.md" - \
   < "collab/<slug>/prompts/codex-p1.md" 2>&1 | tee "collab/<slug>/prompts/codex-p1.log"
 grep -m1 -oE "session id: [0-9a-f-]+" "collab/<slug>/prompts/codex-p1.log"  # → codex_sessions.txt
 ```
 
-**后续轮次显式 ID resume(禁用 `--last`):**
+**Later rounds resume by explicit id (never `--last`):**
 
 ```bash
-codex exec resume <SESSION_ID> -m gpt-5.6-sol -c model_reasoning_effort=xhigh -o "<输出文件>" - < "<prompt文件>"
+codex exec resume <SESSION_ID> -m gpt-5.6-sol -c model_reasoning_effort=xhigh -o "<out-file>" - < "<prompt-file>"
 ```
 
-`--last` 有 cwd 过滤、且桌面 App 随时可能并发新建会话把「最新」抢走——一律显式 ID。实现阶段用 `-s workspace-write`。
+`--last` is cwd-filtered and the desktop App may create a newer session at any moment and steal "latest" — always explicit id. Implementation phase adds `-s workspace-write` on create.
 
-**由指定的既有会话开始**:resume 接受 UUID 或线程名。**但线程名既不唯一也不稳定**(实测 `session_index.jsonl` 同名对应多个 id、同一 id 对应多个名)→ **指认既有会话一律用 UUID**;线程名只用于向用户列候选,挑定后立即解析回 UUID。注意:①resume 会**向那条 App 对话追加内容,动它前必须征得用户同意**,征同意时注明「协作期间请勿在 App 中使用这条对话」(防 CLI 与 App 并发写同一会话);②App 与 CLI 有版本偏差,接管前先发无害记忆探针(「用三行总结这条会话讨论到哪」)验证记忆完整,通过再采用。
+**Starting from a designated existing session**: resume accepts a UUID or a thread name. **Thread names are neither unique nor stable** (measured: `session_index.jsonl` maps one name to several ids and one id to several names) → **always identify sessions by UUID**; use names only to list candidates to the user, then resolve the pick back to a UUID. Notes: ① resume **appends to that App conversation — get the user's consent first**, and ask them not to use that conversation in the App during the collaboration (CLI + App concurrent writes to one session are undefined); ② App and CLI can be version-skewed — before adopting, send a harmless memory probe ("summarize in three lines where this conversation got to") and adopt only if memory is intact.
 
-其他要点:
-- 讨论轮 2–5 分钟,实现阶段可能 10–30+ 分钟:**一律 Bash `run_in_background` 跑**,等完成通知,期间做别的。
-- **每条会话首条消息自包含**(角色/文件路径/任务/契约/约束);后续轮次可依赖会话记忆,涉及文件仍给路径。prompt 先 Write 存 `prompts/codex-pNrM.md`(阶段 N 轮次 M,如 `codex-p2r3.md`;无轮次的阶段省略 rM)再经 stdin 喂入。
-- 输出契约写明:「你的**最终回复正文**就是交付物全文(会被直接存为 `<目标文件>`),不要附加提问或客套」。
-- 排查加 `--json` 看事件流。退出码非 0 或 `-o` 文件为空 → 读 `prompts/codex-pN.log`。
+Other points:
+- Discussion rounds take 2–5 minutes, implementation 10–30+: **always run via Bash `run_in_background`**, wait for the completion notification, do other work meanwhile.
+- **The first message of each session is self-contained** (role/paths/task/contract/constraints); later rounds may rely on session memory but still give file paths. Prompts are engine-generated into `prompts/codex-pNrM.md` (phase N round M, e.g. `codex-p2r3`; drop rM for round-less phases) and fed via stdin.
+- Output contract states: "your **final reply body** is the deliverable in full (it will be saved as `<target-file>`), no appended questions or pleasantries."
+- Debugging: add `--json` for the event stream. Non-zero exit or empty `-o` file → read `prompts/codex-pN.log`.
 
-## 流程
+## Flow
 
-### Phase 0 — 开题(O)
-O 写 `00_TOPIC.md`:主题、动机、已知约束、相关代码入口(具体路径,替两侧省探索)、验收标准、明确的 out-of-scope。信息不足先问用户。若用户指定既有 Codex 会话作起点,按上文(征同意→记忆探针→采用)接管为讨论会话。
+### Phase 0 — Open the topic (O, manual)
+O writes `00_TOPIC.md`: topic, motivation, known constraints, relevant code entry points (concrete paths — saves both sides exploration), acceptance criteria, explicit out-of-scope. Ask the user first if information is missing. If the user designates an existing Codex session as the starting point, adopt it as the discussion session per the consent → memory-probe → adopt procedure above.
 
-开题同步三件事:①**目录**——建目录前先扫 `collab/` 有无同主题目录:有则**续用原目录进入恢复模式**(不看日期前缀),真正撞名才加 `-2` 序号;②把 collab 目录路径告知用户一次(所有产出实时落盘,随时可看);③**规模比例**——判定机制天然自适应(小任务 r1 双实质 AGREE 当轮即进 Phase 3,「10 轮是上限不是配额」),小任务允许产物收缩:`10_`/`11_` 一页要点、`30_PLAN` 与 `31_TASKS` 可合并、`90_SUMMARY` 数行,文件命名照旧;单函数级的琐碎改动,O 应直说不值得启动本 skill,由用户定。**不可收缩项**:用户批准闸门、Phase 1 独立防锚定、CONSENSUS 凭证、评审姿态。
+Three things at opening: ① **directory** — scan `collab/` for a same-topic directory first: if found, **reuse it and enter recovery mode** (ignore the date prefix); only a true name clash gets a `-2` suffix; ② tell the user the collab dir path once (everything lands there in real time); ③ **scale proportionality** — the verdict mechanism is naturally adaptive (a small task with a substantive double-AGREE in r1 goes straight to Phase 3; "10 rounds is a cap, not a quota"), and small tasks may shrink deliverables: one-page `10_`/`11_`, merged `30_PLAN`+`31_TASKS`, a few-line `90_SUMMARY`, same filenames; for a trivial single-function change, O should say outright that this skill is not worth starting — the user decides. **Non-shrinkable**: the user approval gate, Phase 1 independence (anti-anchoring), CONSENSUS credentials, the review stance.
 
-### Phase 1 — 独立提案(防锚定)
-O **并行**发起两侧,自己不写提案:
-1. 派生 CA(subagent),prompt 指向 `00_TOPIC.md`、**明确禁止阅读 `11_codex_proposal.md`**,写 `10_claude_proposal.md`(方案、涉及文件、风险、工作量;关于现状代码行为的关键断言附 file:line 锚点——评审方会抽查)。
-2. 发 Codex 后台任务,prompt 指向 `00_TOPIC.md`、**明确禁止阅读 `10_claude_proposal.md`**,写 `11_codex_proposal.md`,同结构。此调用创建讨论会话,抓 session id 记 `codex_sessions.txt`。
+### Phase 1 — Independent proposals (anti-anchoring)
+`advance` prepares both prompts; O executes both printed actions **in one message**; O writes nothing:
+1. CA action per carrier — headless: launch the printed ca-round `new` command (creates the CA discussion session, id auto-registered); subagent: spawn with the full content of `prompts/ca-p1.md`. Either way the prompt forbids reading `11_codex_proposal.md` and targets `10_claude_proposal.md` (design, files, risks, effort; key claims about current code behavior carry file:line anchors — the reviewer will spot-check).
+2. Launch the printed cb-round `new` command — same structure, forbids reading `10_`, creates the CB discussion session (id auto-registered).
 
-两个后台任务同时跑,O 等两侧都回。
+Both background tasks run simultaneously; O waits for both.
 
-### 变体:双会话续接(跳过独立提案,直接进 Phase 2)
-适用:两边已有读过项目并各自成形方案的会话,Phase 1 目的已达成。两个动作不可省:
-1. **题面对齐**:仍写 `00_TOPIC.md`(评审需共同裁判尺度),从两条会话内容提炼、交用户确认。
-2. **提案物化**:落成 `10_`/`11_`(评审要引用、用户要能看,兼做记忆探针)。
-   - **CB 侧·接管**:resume 指定会话发整理指令 → `-o` 落 `11_`;该会话升级为讨论会话(**写入用户 App 对话,须先同意**)。
-   - **CB 侧·只读取**:解析 `~/.codex/sessions/.../rollout-<id>.jsonl` 提炼成 `11_`,不动原对话;另新建讨论会话,首条喂入 `11_` 声明「这是你已确立的立场」。
-   - **CB 侧·用户预置**:用户在 App 里自行让 Codex 整理成文档交付(粘贴/存 `11_`);评审阶段 CB 如何回应另定——(a) 授权 resume 原会话 /(b) 新建会话喂 `11_` 当既定立场 /(c) 信箱模式。默认 (b)。
-   - **CA 侧·subagent 继承**:O 用 `search/get session transcripts` 读那条既有 Claude 会话,提炼成 `10_`,派生 CA 时注入「这是你的既定立场」。
-   - **CA 侧·独立会话接管**:直接把那条既有 Claude 顶层会话当 CA(备选承载模式),O 用 `send_message` 驱动。
-3. 从 Phase 2 直接开始。若两会话成形时已互看过对方内容,防锚定红利不存在——不影响流程,但**收敛快在这里不是红利、而是需要更严审视的信号**(预锚定下更易礼貌趋同),O 应确保至少一轮实质找错、不放行空心 AGREE。
+### Variant: dual-session continuation (skip independent proposals, enter Phase 2)
+Applicable when both sides already have sessions that read the project and formed designs — Phase 1's purpose is already met. Two actions are not skippable:
+1. **Brief alignment**: still write `00_TOPIC.md` (reviews need a shared yardstick), distilled from both sessions, user-confirmed.
+2. **Proposal materialization**: land `10_`/`11_` (reviews must cite them, the user must see them; doubles as a memory probe).
+   - **CB · adopt**: resume the designated session with an organize instruction → `-o` lands `11_`; that session becomes the discussion session (**writes into the user's App conversation — consent first**).
+   - **CB · read-only**: parse `~/.codex/sessions/.../rollout-<id>.jsonl` into `11_` without touching the conversation; create a fresh discussion session whose first message feeds `11_` as "your established position".
+   - **CB · user-prepared**: the user has Codex organize the document in the App themselves (paste/save as `11_`); how CB answers reviews is then chosen: (a) authorized resume of the original / (b) fresh session fed `11_` as established position / (c) mailbox mode. Default (b).
+   - **CA · subagent inheritance**: O reads the existing Claude session via `search/get session transcripts`, distills `10_`, spawns CA with "this is your established position".
+   - **CA · session takeover**: use that existing top-level Claude session as CA (fallback carrier mode), driven via `send_message`.
+3. Start from Phase 2 (`advance` will see proposals present and prepare r1). If the two sessions saw each other's content while forming, the anti-anchoring dividend is gone — the flow still works, but **fast convergence here is a signal for stricter scrutiny, not a bonus** (pre-anchored minds converge politely); O ensures at least one genuinely fault-finding round and never passes a hollow AGREE.
 
-### Phase 2 — 交叉评审收敛(≤ 10 轮,O 当传话+判定中枢)
+### Phase 2 — Cross-review convergence (≤ 10 rounds; engine sequences, O judges)
 
-O 派评审任务时,prompt 必须框定**找错姿态**(把两个天生 agreeable 的模型从礼貌趋同里拉出来的关键;角色是**质检员,不是辩手**——不鼓励攻击性):「无异议的评审=未尽职;你此轮的价值是找出对方方案的遗漏/错误/更优解,不是附和。也点出对方**整块漏掉**的维度(失败路径 / 回滚与恢复 / 并发竞态 / 规模上限 / 安全鉴权 / 数据迁移与向后兼容 / 可观测性,是常见的沉默区)。首轮把审查做透,让问题尽早暴露;后续轮次以收敛已有分歧为主,**真发现的新问题任何轮次都可以提**(新发现是收益,不是干扰)——但不刻意搜寻问题:发现应是认真审查的副产品,不是要凑的配额。**找错≠为反对而反对**:只提实质问题(采纳与否会实际改变方案/分工),凑数的琐碎挑刺同样是未尽职;认真核查后方案若站得住,给出带凭证的 AGREE 同样是尽职产出——勤勉体现在评审正文和补足账本里,不体现在结论是否反对。」
+The **fault-finding stance** is framed in every review prompt (the key to pulling two agreeable-by-training models out of polite convergence; the role is **quality inspector, not debater** — no aggression encouraged): "A review with no findings = a job not done; your value this round is finding the counterpart's omissions/errors/better alternatives, not concurring. Also call out wholesale-missing dimensions (failure paths / rollback & recovery / concurrency races / scale ceilings / security & auth / data migration & backward compatibility / observability are the usual silent zones). Deep audit in round 1 so problems surface early; later rounds converge existing disputes, and **genuinely new findings are welcome in any round** (yield, not noise) — but never hunt problems to fill a quota. **Fault-finding ≠ objecting for its own sake**: substantive issues only (adoption would actually change the plan or task split); padded nitpicks are equally a job not done; a credentialed AGREE after honest scrutiny is equally diligent output — diligence lives in the body and the supplement ledger, not in the verdict."
 
-**r1 = 盲态并行对称对审**(复用 Phase 1 的并行+隔离,消除先手框定权):O 同时把 CB 的 `11_` 发给 CA、把 CA 的 `10_` 发给 CB,两侧各自独立评审**对方的原始提案**、互不先看对方评审,各写 `20_claude_review_r1.md` / `21_codex_review_r1.md`。**r1 不产融合草案**(避免后手被锚在既成综合稿上)。
+**r1 = blind symmetric parallel cross-review** (reuses Phase 1's parallelism + isolation, eliminating first-mover framing power): the engine prepares both prompts at once; each side independently reviews **the other's original proposal**, neither sees the other's review, landing `20_claude_review_r1.md` / `21_codex_review_r1.md`. **r1 produces no fusion draft** (protects the second mover from being anchored on a ready-made synthesis).
 
-**r2 起 = 收敛**:O 交换双方评审,由本轮执笔方产出**互补融合草案**。**融合草案日后就是 `30_PLAN.md` 的正文基底(Phase 3-1),故按「可直接搬进定稿」的质量落笔**——验收/DoD 写足、别指望 O 事后补;执笔方须知:O 只会搬运、追加、定态化,不会替你重写。**r2 默认 CB 执笔**(owner 默认 CA 时,融合首稿的框定权归日后的审查方——写作者偏置与实现者偏置互相制衡),**此后逐轮交替**:起点固定后,轮到谁由轮次号奇偶纯推导。草案写入执笔方当轮评审文件(`20_`/`21_` 的 rN 版)首节「## 融合草案」,不另立文件。执笔方**基于两份原始提案与迄今全部评审(含补足账本)**产出优于双方各自输入的最优版本——目标不是折中各让一步,而是**取两侧强项、填两侧空缺**;真实冲突保留为 OBJECT,禁止用和稀泥折中掩盖。后手对草案做**审查**:它是「待审查的提案」而非「待认可的结论」——找错、找遗漏、找更优解,只提实质问题,不为反对而反对。
+**r2 onward = convergence**: the engine sequences penner-first-then-second; the round's penner writes the **fusion draft**. **The fusion draft is written in the `30_PLAN.md` skeleton and at convergence IS the PLAN body** (Phase 3-1) — acceptance criteria / DoD written in full right there; the finalize penner only integrates and de-processifies, and O never rewrites. **r2 penner defaults to CB** (with the implementation owner defaulting to CA, first-draft framing power goes to the future auditor — author bias and implementer bias check each other), **alternating each round after** — from the fixed anchor, parity alone derives the penner. The draft goes in the "## Fusion draft" first section of the penner's review file, not a separate file. The penner synthesizes **from both original proposals and all reviews to date (incl. supplement ledgers)** a version better than either input — not a compromise: take both sides' strengths, fill both sides' gaps; real conflicts stay OBJECT, mush is forbidden. The second mover **audits** the draft: it is "a proposal under audit", not "a conclusion awaiting assent".
 
-**同轮同材料**(公平性事实):O 每轮向两侧提供相同的材料清单,一律以 collab 文件路径引用原文(CA 共享工作树、CB read-only 沙箱均可自行读盘),O 的转述只作导读、不得替代原文;r2 起后手与执笔方同语料,后手另加当轮草案。
+**Same round, same materials** (fairness fact): the engine hands both sides the same material list each round, always as collab file paths (CA shares the worktree; CB's read-only sandbox reads the repo fine); nothing is paraphrased in between — the engine's receipts excerpt verbatim, and O's optional framing is a reading guide, never a substitute for the files. From r2 the second mover gets the same corpus plus the current draft.
 
-**每份评审的契约**(写进派活 prompt):
-- 逐点回应对方的点(同意/反对/修正);
-- **补足账本**——一张表 `| # | 对方遗漏/缺陷 | 严重度 | 我补上什么 |`,把「找缺点」显式转成「补足」。「我补上什么」的精度要求是**与方案同层或更细**:方案已落到文件/接口的,修补也落到文件/接口;方案还在设计层的,落到模块/接口契约/设计决策即可,并注明落点归属(如「归导出服务层,具体文件待 PLAN 冻结接口时定」)。**不确定位置就明说待定,严禁编造看似具体的文件名——假精度比粗精度更有害。** 唯一硬标准:每条修补要具体到**能直接变成 `31_TASKS` 的一行、且提出方日后可验收**;
-- 融合草案里每个要素打**来源标签**(来自CA / 来自CB / 补足-新增),让「真互补还是照抄一方」可审;
-- **证据锚点**:关于现状代码行为的关键事实断言附 file:line 锚点(双方均可读盘);评审时抽查对方锚点的真伪,失实点名——自信的错误前提是两个 LLM 共有的高发盲区,锚点让它可被廉价证伪;
-- 末尾按上文格式的 `CONSENSUS` 行(AGREE 也要填凭证栏)。
+**Per-review contract** (in the prompts):
+- point-by-point response to the counterpart (agree/object/amend);
+- **supplement ledger** — table `| # | peer's gap/defect | severity | what I add |`, converting "finding faults" into "adding fixes". Precision of "what I add": same altitude as the plan or finer — file/interface level if the plan is there, module/contract/decision level if the plan is still design-level, with ownership noted (e.g. "belongs to the export service layer; file TBD at PLAN interface-freeze"). **Unsure of the location → say TBD; never invent a plausible filename — fake precision is worse than coarse precision.** The one hard bar: each row must be directly convertible into a `31_TASKS` line the proposer could later accept;
+- fusion-draft elements carry **source tags** (from-CA / from-CB / supplement-new), keeping "true fusion vs copying one side" auditable;
+- **evidence anchors**: key claims about current code behavior carry file:line (both sides can read the disk); spot-check the counterpart's anchors, name false ones — confident false premises are the shared high-frequency LLM blind spot; anchors make them cheaply falsifiable;
+- **evidence first**: any dispute decidable by a read-only experiment (existing targeted tests, small probes) — either side just runs it and attaches command + output as new fact; evidence precedes argument; experiments do not change resolution ownership (still the proposer's to confirm or withdraw) but usually make it immediate;
+- the `DISPUTES:` machine-readable line (see below), then the `CONSENSUS` line (**AGREE has a cost** — bare AGREE is malformed and gets returned):
+  - `CONSENSUS: OBJECT — <one sentence: the substantive disagreement (adopting it would actually change the plan or the task split)>`, or
+  - `CONSENSUS: AGREE — residual-risk: <the one thing you still fear most even if this plan is adopted; if truly none, say why>; dropped-objection: <the strongest objection you considered but chose not to press>`.
 
-**判定**:O 读双方 `CONSENSUS` 行——**都 AGREE 且凭证栏非空 → Phase 3**;任一 OBJECT → 把分歧转给对方进下一轮。**分歧集必须单调收窄**,且「已解决」有严格定义——**分歧属于当事方,只在三种情况下算解决**:①**提出方确认关闭**(对方的修订令其满意,在后续评审中明确确认);②**提出方撤回**(被说服,理由记入 AGREE 凭证栏的「放弃的最强反对」);③**用户裁决**。**实证优先**:凡可由只读实验(现有定向测试、小探针)判定的分歧,任一方可径行实验并把命令与输出附为新事实——呈证优先于论辩;实验不改变解决权属(仍由提出方确认或撤回),但通常使其立即到位。执笔方在草案里标「已按 X 处理」只是**待确认**,不算解决;O 也**无权替任何一方宣告分歧已解决**(那是技术判断,违反技术中立)——O 只按双方最新表态记账,**且记账落盘**:每轮判定后更新 `25_disputes.md`,每分歧一行 `id | 提出方 | 一句话 | 状态(open/待确认/closed-确认/closed-撤回/closed-裁决) | 状态变更轮次`,评审引用分歧时带 id;「连续 2 轮零进展」的判据即**连续两轮台账无任何状态变更且无新增行**。据此:已解决的分歧不得重开(重开须给出新事实);**未经提出方确认的点再次被提起,不是重开,是一直未决**。对称的**分歧同一性**规则(Phase 5「发现同一性」的镜像):同一分歧 id 下不得偷换实质——原点被处理后,提出方的不满若已转移到另一件事,按**新分歧**立行、原分歧按实际结局记账,不得借原 id 续命;否则漂移的分歧在台账上伪装成一条顽固分歧,单调收窄的记账失真、零进展判据被误触发。真正新发现的盲点可以入场;风格偏好、可接受的顾虑不占 OBJECT——写进评审正文或 AGREE 的残余风险栏。空心全同意按中立性条款一次性退回。O 中立,**自己不表态**。10 轮仍 OBJECT → **这不是失败,是有价值的信号**(存在值得人裁决的真实设计张力):O 把分歧整理成 2–4 个选项,交用户裁决(`AskUserQuestion`)。**10 轮是上限,不是配额**:若连续 2 轮分歧集零进展(没有分歧被提出方确认关闭、也没有新事实入场),说明已经僵住,O 应提前把僵住的分歧升级用户裁决,不必耗满轮次。
+**Dispute ledger — declarations by parties, recording by the engine, audit by O.** Resolution ownership is the SKILL's core rule: **a dispute belongs to its proposer and is resolved only by ① the proposer confirming closure, ② the proposer withdrawing (reason into the AGREE dropped-objection slot), or ③ a user ruling.** The engine mechanizes the bookkeeping *without* moving the ownership: each review ends with `DISPUTES: <items>` or `DISPUTES: none` — items `dN=open` / `dN=addressed` (non-proposer only → ledger "pending-confirm") / `dN=confirm-closed` (proposer only) / `dN=withdrawn` (proposer only) / `new="one-liner"` (engine assigns the id; no `|`/`;` in the text). `collect` applies declarations to `25_disputes.md` **rejecting authority violations** (flagged in the receipt, not applied); `closed-ruled` is written only by O, recording a user ruling. A penner's "handled per X" is therefore *pending-confirm by construction* — nobody can close a dispute for its proposer, including O. O's audit on each receipt: do the declarations match what the review body argues — **dispute identity** is the thing the machine can't check (the substance under one id must not be swapped; if the proposer's dissatisfaction moved to a different thing, it must be a new dispute line, or the ledger fakes one stubborn dispute and the stall detector misfires).
 
-### Phase 3 — 共识方案 + 分工(用户闸门)
-1. **`30_PLAN.md` 走「融合草案基底版」——搬运 + 追加 + 定态化,不是 O 重写。** 收敛时**最后一版融合草案**(r2+ 执笔方所写、经后手审查确认的那版)已经是两侧审查通过的共识载体,**它就是 PLAN 的正文基底**。O 的动作只有四个:
-   - **搬运**:以该融合草案正文为骨架,**最大限度保留原文措辞**(复制,不重述);
-   - **追加**:融合草案落笔后各轮新增的共识(后手补的验收细化、被接受的分歧处理、最终确认的安全边界)作为**明确标注归属的追加段**(如「来自 CA r2 的 L8」),**不熔进 O 的重述**;
-   - **定态化**:删掉面向 worker 的过程标记(「已按 X 处理(待 Y 确认)」之类),把已关闭的分歧写成定论;
-   - **补最小背景**:PLAN 要能被**用户**独立读懂(融合草案默认读者已读过全部提案与评审),补的是背景与导读——**加法,不是压缩**。
+**Verdict**: engine reads both CONSENSUS lines — **both AGREE with non-empty credentials → Phase 3**; any OBJECT → next round. Resolved disputes may not be reopened (reopening requires new facts); **a point re-raised without proposer confirmation is not a reopen — it was never resolved.** Style preferences and tolerable concerns do not occupy OBJECT (body or AGREE residual-risk slot). Hollow full-agreement → the one-time return per the neutrality clause. O stays neutral, **never takes a position**. **The dispute set must shrink monotonically**: "two consecutive rounds with zero ledger changes and no new rows" = stalled — O escalates the stuck disputes to the user early (2–4 options via AskUserQuestion) instead of burning rounds; the ledger makes this judgment a table lookup. Still OBJECT at round 10 → **not a failure but a valuable signal** (real design tension worth a human ruling): same escalation. **10 rounds is a cap, not a quota.**
 
-   **两条红线(O 转写漂移的真实来源,实战中都发生过)**:① **禁止摘要压缩已同意的验收/DoD 约束**——PLAN/TASKS 就是实施依据,DoD 不能指望实施者回头翻评审文件补;② **禁止加入未经共识的内容**,尤其禁止把 O 自己的建议写成「默认」。**为什么必须这样**:O 也是 LLM,「用自己的话重述共识」与 agent 逐 token 重新生成长文本是同一种失真通道——能复制就不要重写。
-   若流程未产生融合草案(r1 即双 AGREE 收敛),基底 = 被对方确认接受的那份提案 + 对方补足账本的追加,规则同上。
+### Phase 3 — Consensus finalization + task split (user gate)
 
-   `31_TASKS.md` 同源同规:直接吸收融合草案的实施表与各评审**补足账本**的行,**逐条搬运不压缩**:
+**The pen belongs to the finalize penner (a worker), never to O.** Rationale: "restating consensus in O's own words" is the same distortion channel as any token-by-token regeneration — copy, don't rewrite; and O, no longer deep-reading every round under the engine, would be the *worst*-placed writer. The last fusion draft (written in the PLAN skeleton, audited by the second mover) is already the consensus carrier.
 
-   | id | 任务 | owner(待用户批准) | 涉及文件 | 验收标准 | 测试命令 |
+1. **Finalize task** (engine-prepared; penner = the last round's penner; an r1 convergence has no draft, so O picks the base proposal and passes `--penner`): the penner integrates their final draft + later-round confirmed additions into the definitive `30_PLAN.md` + `31_TASKS.md` under a **carry-don't-regenerate** contract: preserve draft wording; append later additions with attribution ("from CA r3 supplement #2"); de-processify per the ledger (**the ledger is the sole authority on dispute outcomes**; any open/pending-confirm dispute → stop and report, don't finalize); risks carried verbatim one per line, never merged; the only net-new text is a short user-facing background section. Two red lines carried from battle scars: ① **no compression of agreed acceptance criteria / DoD** (PLAN/TASKS are the implementation basis; nobody re-reads reviews to recover constraints); ② **no un-consensused additions** — especially: **implementation mode and task owners are undecided execution decisions pending user approval, never written as defaults** (O's suggestions have no place in the penner's text at all). CB-penner delivery is one combined reply that the engine splits on `<!-- FILE: ... -->` markers.
+2. **Readback (both sides, parallel, engine-prepared)**: each side reads the **FULL** PLAN + TASKS and answers four questions — **① omission** (agreed content missing), **② compression** (agreed DoD summarized into lossy one-liners), **③ addition** (un-consensused content present — especially owner/mode written as settled), **④ new blocking risks** (and risks carried unmerged). With the penner as author, the two perspectives are **both self-interested and adversarial**: the second mover checks "are my supplements in" (omission of *their own* content) and "did the penner smuggle preferences" (addition, with genuine opposing interest) — battle data from the O-as-writer era showed the author side caught 7 drifts while the non-author side rubber-stamped; the new geometry puts motivated eyes on both failure directions. On double-AGREE the engine appends both CONSENSUS lines verbatim to `30_PLAN.md` as the sign-off. **An OBJECT names the drift** → the engine archives the readbacks + drifted PLAN/TASKS and routes a repair pass to the penner (restore/delete, not rewrite) — this is fidelity duty, **not a Phase 2 round**; then the readback re-runs for both sides.
+3. **Owner and implementation mode are "undecided execution decisions awaiting user approval," not O defaults.** O may attach a **recommendation** with stated trade-offs at the approval gate (never inside PLAN/TASKS as text that looks settled — battle scar: O once wrote its suggestion as "default" and was legitimately objected out at readback: the split is not the workers' technical consensus to fix, nor O's). Recommendation content: the collaboration dividend concentrates in design and audit, not parallel coding, so **recommend** one owner for the whole implementation with the other side as full-time auditor (see Phase 5); owner recommendation **CA** — this repo's context infrastructure (CLAUDE.md, project memory, hooks) is Claude-tuned and the fix loop is short; recommend **CB** when the task is self-contained, spec freezable in PLAN, low repo-convention surface (burns a separate ChatGPT quota, no contention with the Claude pool). **Only when** tasks are low-coupling, interfaces simple and freezable up front, both chunks large, and wall-clock pressed, recommend **dual-track**. Dual-track hard rule (in force once the user picks it): **the two owners' file sets must be disjoint** — shared hot files (locales, `api.ts`, `models.py`, migrations) go wholly to one owner; cross-file interfaces are frozen in the PLAN first; cut by module boundary, not mechanically frontend/backend.
+4. **Present for user approval** (the user is the only genuinely heterogeneous checker in the loop). The approval package: PLAN + TASKS (worker-authored) + a **"key assumptions both sides share but never adversarially tested"** list — mechanically extracted from every AGREE credential slot (residual-risk / dropped-objection lines verbatim) — with the lead-in: **"Please scrutinize these shared assumptions — the places two AIs are most likely to step into together — rather than only judging whether the plan looks reasonable."** Invite the user to **add/adjust the acceptance items Phase 6 will verify against** (external perspective injection). Top the package with O's only authored text: a 3–5 line reading guide (one-sentence plan, key trade-offs, decisions needed from the user, suggested reading order: assumptions → TASKS → PLAN as needed). On approval O appends "User approved <date> (incl. added acceptance items)" to `30_PLAN.md`. **No code moves before approval.** **Rejection or amendments from the user** enter as "user ruling / new facts" → targeted Phase 2 convergence (usually 1–2 rounds, counted in the 10), then re-finalize (delta pass by the penner), re-readback, re-present.
 
-   评审里的**残余风险**逐条原样带入 PLAN 的风险节——**不合并**(两条风险指向不同失败模式时,合并即失真)。
-2. **实现模式与 owner 是「待用户批准的未决执行决策」,不是 O 的默认。** O 可以给**建议**并写明取舍,但 `PLAN`/`TASKS` 里必须标注为未决、交用户批准时定,**不得表述成「默认 = X」**(实战中 O 把建议写成默认,被对方在定稿复读正当驳回:分工不属两 worker 的技术共识,O 无权固化)。建议内容:协作红利集中在定方案与审代码、不在并行编码,故**建议**整个实现划给一个 owner、另一方转全职审查员(见 Phase 5);owner 建议 **CA**——本 repo 语境基建(CLAUDE.md、项目记忆、hooks)都是为 Claude 修的、修复回路短;任务**自成一体、规格可在 PLAN 冻结、repo 惯例表面积小**时建议给 **CB**(烧独立 ChatGPT 配额,与 Claude 用量池互不挤占)。**仅当**任务低耦合可分、接口简单可提前冻结、两块工作量都大且赶墙钟时才建议**双开**。双开硬规则(用户选了双开即生效):**两个 owner 的文件集必须不相交**——共享热点文件(locale、`api.ts`、`models.py`、迁移文件等)整只划给一个 owner,跨文件接口先在 PLAN 冻结签名,按模块边界切而非前端/后端机械切。
-3. **定稿复读(拓宽的确认步,非新阶段)**:让双方**通读整份 `30_PLAN.md` 与 `31_TASKS.md`**(不只自己那片),各写一行 `CONSENSUS` 结尾的判定。基底版让复读的问法更机械、也更查得全——四问:**①有没有漏搬**(已同意的内容没进 PLAN)、**②有没有被压缩**(已同意的验收/DoD 被摘成概要而丢约束)、**③有没有被加料**(出现未经共识的内容)、④有无新增阻断性风险。**两侧视角天然互补,都要问**:执笔方查「我的完整约束有没有被摘丢」,后手查「我的补充与立场有没有被带入」——实战中只有前者抓出了 7 处漂移,后者全说无漂移。CA via `SendMessage`,CB via resume 讨论会话。两侧确认后才呈用户,两行复读 `CONSENSUS` 由 O **原文追加到 `30_PLAN.md` 末尾**。**一侧 OBJECT 指出漂移** → O 逐条修回后**重走复读**;这属 O 的保真义务、不是技术分歧,**不计 Phase 2 轮次**。
-4. **呈用户批准**(用户是全流程唯一真正异质的检查者)。批准包除 `PLAN`/`TASKS` 外,附一份**「双方一致但未经对抗验证的关键假设」清单**(直接搬评审里的残余风险 / 放弃的最强反对),引导语:**「请重点审这些共享假设——这是两个 AI 都没质疑、最可能一起踩空的地方,而非只看方案是否合理。」** 顺带请用户**增补/调整 Phase 6 据以验收的验收项**(注入外部视角)。批准包顶部附 3–5 行导读:方案一句话、关键取舍、需用户拍板的点、建议阅读顺序(假设清单 → TASKS → PLAN 按需)。用户批准后,O 在 `30_PLAN.md` 末尾追加「用户已批准 <日期>(含增补验收项)」。**未获批准不动任何代码。** **用户驳回或附修改意见** → 意见以「用户裁决/新事实」身份入场,回 Phase 2 做定向收敛(通常 1–2 轮,计入 10 轮上限;经裁决定过的点不得重开),改后重走定稿复读,再呈批。
+### Phase 4 — Implementation (O never codes; manual phase — engine not in the loop)
+- **Baseline (mandatory first step)**: O snapshots without touching the worktree — `sha=$(git stash create) && git stash store -m "collab-<slug>-baseline" $sha` (clean tree → empty output, record baseline=HEAD); SHA + `git status --porcelain` opening inventory into `baseline.txt`. Files already dirty/untracked at baseline are **hot by default**: not assigned to workers; if assignment is truly needed, state the risk to the user first (note `git stash create` **excludes untracked files** — they are unrecoverable-to-baseline, which is exactly the causal basis of the hot-by-default rule). **At most one topic in Phases 4–6 at a time** (the worktree is a global resource): another topic dir with `baseline.txt` but no `90_SUMMARY.md` → confirm with the user before starting.
+- **Single-owner mode (default)**: O drives only the owner. owner=CA: relay tasks via SendMessage (impl-task template filled by hand), log to `41_claude_worklog.md`; owner=CB: create/resume the implementation session (workspace-write), log to `40_codex_worklog.md` — **create = smoke test**: the first prompt only asks CB to write one title line into the worklog; O verifies exit 0 + file landed before dispatching real tasks (same session captures the UUID; zero extra cost; deletable once workspace-write is field-proven on this machine). Smoke fails → owner falls back to CA or mailbox mode. The auditor does not touch code in this phase.
+- **Dual-track mode** (only if Phase 3 criteria were met): both sides driven in background simultaneously, each writing its own worklog.
+- **PLAN amendment procedure** (the only legitimate deviation channel when reality overturns a PLAN assumption; **silent deviation is forbidden** — the Phase 5 PLAN-conformance audit will catch it and burn fix cycles): the owner pauses the affected task, submits amendment A#: the overturned PLAN item + **self-carried evidence** (file:line / targeted test or probe output) + the minimal proposal; O relays to the other side (amendment-round template). **≤2 rounds per amendment, cap not quota** (1 round = the amendment or its revision + one CONSENSUS line; rationale: it blocks the critical path and is a narrow single-point question — information saturates in 1–2 rounds): the counterpart's **first OBJECT must state "what change would make me agree"**, a criterion bound by the **same three edges as Phase 5 closure criteria** (same scope; met-means-closed with no appended conditions; the three relief channels — new substance → new dispute line, unstateable criterion → straight to the user, non-blocking → PLAN risk section) with one edge re-timed: deliberation happens **before** further implementation, so the criterion must be **verifiable at deliberation time** (text/interface-contract level or read-only experiment; never "implement it first and let me look"); an out-of-bounds criterion counts as no criterion → O escalates early; still OBJECT after 2 rounds = real dispute → user ruling. **Amendments touching scope/acceptance criteria** get at most 1 technical round then go straight to the user — the authorization boundary is crossed; worker consensus cannot cover it. Passed amendments are **appended** to `30_PLAN.md` under "## Amendments" (A#/date; original text untouched); thereafter the semantic baseline = PLAN + all passed amendments. Ledger rows in `25_disputes.md` (proposer=owner, same state machine). **Degeneration detector**: a third amendment on one topic → O stops patching and asks the user whether to run a bounded Phase 2 re-convergence + re-approval — what's falsified is no longer one assumption but the PLAN's structural quality.
+- **Early calibration audit** (optional, scale-triggered, same shape as "scale proportionality"): when the implementation is large (many tasks / long wall-clock), after the first shaped task lands, the auditor quick-audits that slice for "is the PLAN being misread" — self-consistent misreading is cheapest to catch here; then the rest proceeds. Findings follow the Phase 5 contract. Small tasks skip it; no new phase.
+- Implementer hard constraints: only your assigned files (dual-track: your own file set); no `git add/commit/push`; no dependency installs; targeted tests only.
+- Nobody commits; the worktree belongs to the integration phase.
+- 40+ minutes with no output: check the worklog/`.log`, narrow the task or re-dispatch with added instructions.
 
-### Phase 4 — 实现(O 不编码)
-- **开工基线(必做第一步)**:O 拍快照但不动工作树——`sha=$(git stash create) && git stash store -m "collab-<slug>-baseline" $sha`(树干净时 stash create 输出为空,记 baseline=HEAD),SHA 与 `git status --porcelain` 开工清单写入 `baseline.txt`。基线中**本已脏/untracked 的既有文件默认视为热点**:不划给 worker;确需划入,先向用户明示风险(注意 `git stash create` **不含 untracked**——基线时 untracked 的文件不在快照内、事后无法按基线恢复,这正是热点默认规则的因果根据)。**同一时刻至多一个主题处于 Phase 4–6**(工作树是全局资源):开工前发现其他主题目录有 `baseline.txt` 而无 `90_SUMMARY.md`,先与用户确认再动工。
-- **单 owner 模式(默认)**:O 只驱动 owner 一侧。owner=CA:`SendMessage` 派活,写 `41_claude_worklog.md`;owner=CB:创建/resume 实现会话(workspace-write),写 `40_codex_worklog.md`——**创建即冒烟**:首条 prompt 只要求 CB 往 `40_codex_worklog.md` 写一行标题,O 验证退出码 0 且文件落盘后再派真实现任务(同一会话顺带抓 UUID,零额外成本;workspace-write 本机实测通过后可删本句);冒烟失败 → owner 回落 CA 或信箱模式。审查方本阶段不动代码。
-- **双开模式**(仅 Phase 3 判定满足条件时):两侧同时后台驱动,各写各的 worklog。
-- **PLAN 修正案程序**(实现中发现 PLAN 假设被现实推翻时的唯一合法通道;**静默偏离禁止**——Phase 5 对照必撞出且白耗修复循环):owner 暂停受影响任务,提修正案 A#:被推翻的 PLAN 条目 + **自带证据**(file:line / 定向测试或探针输出)+ 最小提议;O 传另一方审议。**每修正案 ≤2 轮,上限非配额**(1 轮 = 修正案或其修订版 + 对方一行 CONSENSUS;限 2 的理由:它挂在关键路径上阻塞实现,且是单点窄问题、信息 1–2 轮即饱和):对方**首次 OBJECT 即须写明「改成什么样我同意」**,该判据受 Phase 5**「关闭标准三条边界」的同构约束**(同范围试金石、「满足即通过,不得就同一修正案追加条件」与泄压三通道原样适用——新实质落新分歧行、说不清判据径呈用户、非阻断入 PLAN 风险节;唯第 2 条换时点:审议发生在继续实现**之前**,判据须**审议时点可核验**,文本/接口契约层可判或只读实验可证,不得是「先实现出来我看看」),越界判据视同给不出判据 → O 提前升级;2 轮仍 OBJECT = 真实分歧,呈用户裁决。**动到范围/验收标准的修正案**至多 1 轮技术审议后径呈用户——授权边界已跨,worker 共识不能替它背书。通过的修正以**追加条目**写入 `30_PLAN.md` 末尾「## 修正案」(标 A#/日期,不改原文);此后全流程的语义基准 = PLAN + 全部已通过修正案。台账入 `25_disputes.md`(提出方=owner,状态机同分歧)。**退化检测**:同一主题第 3 个修正案出现 → O 停止点补,提请用户决定是否回炉一轮有界 Phase 2 收敛+重批——此时被证伪的不是单条假设,是 PLAN 的结构性成色。
-- **早期校准审查**(可选,规模触发,与「规模比例」同构):预计实现量大(多任务/长墙钟)时,首个成形任务落地后先让审查方对该切片快审一次,专核「对 PLAN 的理解是否走偏」——自洽误读在此拦截最便宜;通过再放行其余任务,发现的偏差按 Phase 5 契约处理。小任务跳过,不设新阶段。
-- 实现方硬约束:只碰划给自己的文件(双开时=各自名下文件集);禁止 `git add/commit/push`;不装依赖;只跑定向测试。
-- 谁都不 commit,工作树留给集成阶段。
-- 超 40 分钟无产出:查 worklog/`.log`,缩小任务或追加指令重发。
+### Phase 5 — Audit (manual phase)
+- **Single-owner mode (default) = full audit**: the non-implementing side audits **the entire diff** and **checks semantics against `30_PLAN.md` (incl. all passed amendments)** — the single-owner-specific risk is **self-consistent misreading** (one mind writes both sides of an interface; a PLAN misreading stays consistent and tests don't fail), which the auditor checks as a dedicated item. Audit scope pins to the baseline: `git diff <baseline-sha> -- <31_TASKS file set>` (SHA from `baseline.txt`; owner-created untracked files are added to scope by O via the before/after porcelain diff). owner=CA → CB audits (resume the discussion session; runs the diff itself; writes `51_codex_reviews_claude.md`); owner=CB → CA audits (writes `50_claude_reviews_codex.md`). Findings graded by severity, stance and threshold per Phase 2 (find real faults, no performance), CONSENSUS line at the end (AGREE = no blocking issues, credentials still required). Optional hint (not mandatory): the auditor may **blind-read the PLAN first and write down expected interfaces/semantics, then open the diff** — reading the PLAN after the implementation anchors you to the implementation; the blind expectation is the cheapest control for self-consistent misreading.
+- **Dual-track mode = cross-audit**: CA audits CB's file set and vice versa, same contract.
+- Fixes are executed only by the owner; the auditor points, never patches. A fix closes only when **the side that raised the finding re-checks and accepts** (resolution ownership = proposer's, same as Phase 2). Re-checks and rejections **append to the same** `50_`/`51_` file: stable finding numbers, one explicit entry per rejection (`finding #k · rejection n · closure criterion: ...`) — the round count per finding = its rejection entries, reconstructible from the file.
+- **Rejected acceptance**: the auditor must state the **substantive reason still unmet** (a vacuous rejection is returnable once under O's procedural check); the owner fixes again. Cap: **3 fix↔accept cycles per finding**; **from the second rejection on, the auditor must state a verifiable closure criterion** ("what does fixed look like"). **Three edges bound every closure criterion**:
+  1. **Same scope as the finding** — no gating on pre-existing environment debt (e.g. HEAD's existing mypy errors) or new demands beyond the finding. Within scope, **round-by-round refinement is legal and is precisely the rejector's duty** (touchstone: is the detail a necessary constituent of "the original defect is fixed", or an independently-fileable new demand? The former refines; the latter files a new finding);
+  2. **Self-provable within the owner's run constraints** — targeted tests can verify it; full-suite verification belongs to Phase 6;
+  3. **Met means closed (binds the goalposts, not the judgment)** — once the owner provably meets the stated criterion, that finding's fix cycle closes; the criterion binds its author too: no appended demands on the same finding after it is met. This does **not** require the auditor to be satisfied: if they still see an unresolved substance, the position is legitimate and routes three ways — new substance with new facts → **new finding** (fresh counter); a deep concern that can't be stated as a verifiable criterion → O **escalates to the user**; a non-blocking worry → **residual risks / leftovers**. The only thing excluded: the same finding occupying the fix loop unchanged after its criterion is met.
 
-### Phase 5 — 审查
-- **单 owner 模式(默认)= 全量审查**:未实现的一方审**整个 diff**,并**对照 `30_PLAN.md`(含末尾全部已通过修正案)核对语义**——单人实现的特有风险是**自洽误读**(同一个脑子写接口两侧,读错 PLAN 也错得前后一致,测试不报错),审查方要专门核这一项。审查范围以开工基线为准:`git diff <baseline-sha> -- <31_TASKS 涉及文件集>`(SHA 见 `baseline.txt`;worker 新建的 untracked 文件由 O 按开工前后 porcelain 清单比对补入审查范围)。owner=CA 时由 CB 审(resume 讨论会话,自己跑上述 diff,写 `51_codex_reviews_claude.md`);owner=CB 时由 CA 审(写 `50_claude_reviews_codex.md`)。发现按严重度分级,姿态与门槛契约同 Phase 2(找错不表演、只提实质问题),末尾 `CONSENSUS` 行(AGREE = 无阻塞问题,同样带凭证)。可为提示(非强制):审查方可**先盲读 `30_PLAN.md` 写下对接口/语义的预期、再开 diff 对照**——看过实现再读 PLAN 会被实现反向锚定,盲态预期是核「自洽误读」最便宜的对照物。
-- **双开模式 = 交叉互审**:CA 审 CB 的文件集、CB 审 CA 的,契约同上。
-- 修复一律由实现方(owner)执行;审查方发现的问题只提不改。修复完成后由**提出该发现的一方复核验收**才算关闭(分歧解决权归提出方,同 Phase 2)。复核与驳回**追加写回同一份** `50_`/`51_`:每条发现带稳定编号,每次驳回一个显式条目(`发现#k · 第 n 次驳回 · 关闭标准:…`)——往返计数 = 该发现名下驳回条目数,从文件可重建。
-- **验收不通过**:审查方须说明**仍不满足的实质理由**(空泛驳回,O 可按程序把关一次性退回),owner 据此再修。同一发现的修复↔验收往返以 **3 次为上限**;**从第二次驳回起,审查方必须同时给出可核验的关闭标准**(「修到什么样算过」)。**关闭标准三条边界**:
-  1. **与该发现同范围**——不得以既有环境债(如 HEAD 既有的 mypy 错)或超出发现本身的新要求为闸。同范围内**逐轮把要求说得更细是合法的、也正是驳回的义务**(试金石:该细节是「原缺陷修好」的必要构成,还是可独立立案的新诉求?前者细化,后者须立新发现);
-  2. **owner 运行约束内可自证**——定向测试可验;全量验证归 Phase 6;
-  3. **满足即关闭(约束门柱,不约束判断)**——owner 可证明地满足既定标准后,该发现的修复循环即关闭;标准对写标准的一方同样有约束力,达标后不得就同一发现追加要求。这**不要求审查方对修复满意**:若仍认为实质问题未解决,立场合法,按情形走三条通道——标准未覆盖的新实质连同新事实立**新发现**(新计数器);说不清可核验标准的深层疑虑由 O **升级用户裁决**;够不上阻塞的顾虑记入**残余风险/遗留项**。被排除的只有:同一条发现在标准达成后以原样继续占用修复循环。
+  An out-of-bounds closure criterion counts as "no verifiable criterion" → O escalates early (the problem definition is unclear; more fixing won't help); contested add-ons default to **splitting**: the uncontested part proceeds, the contested item gets filed properly as a new finding by the auditor. **Finding identity**: a closed or capped finding may not return renamed with the same substance (re-raising requires new facts); genuinely new problems exposed by a fix are new findings with independent counters. 3 cycles without closure, or the owner arguing with evidence that no further change is right = real dispute — O doesn't judge: the finding + fix history + both positions go to the user: fix per auditor / keep owner's implementation / record as known issue. "Known issue" rulings go to `90_SUMMARY` leftovers. **Blocking findings unresolved (and unruled) bar Phase 7 wrap-up**; non-blocking ones may be carried into leftovers honestly.
 
-  越界的关闭标准视同「给不出可核验标准」→ O 提前升级(问题定义不清,再修无益);争议附加项的操作默认是**拆**:无争议部分照常推进,争议项由审查方按规矩立新发现。**发现同一性**:已关闭或已到限的发现,实质相同的点不得改名重提(重提须新事实);修复引出的真正新问题按新发现立案、独立计数。3 次仍不通过、或 owner 有据地认为不应再改,即为真实分歧——O 不裁对错,把该发现连同修复历史与双方立场呈用户裁决:按审查方意见改 / 维持 owner 实现 / 记为已知问题。裁为「已知问题」的转入 `90_SUMMARY` 遗留项。**阻塞级发现未关闭(或未经用户裁决)不得进入 Phase 7 收尾**;非阻塞级可如实带入遗留项。
+### Phase 6 — Integration verification (O personally, serial)
+O runs everything **serially** (never heavy tests concurrent with worker background tasks), **acceptance baseline source = the repo CI gate**: run the affected surface's isomorphic checks per the current `.github/workflows/ci.yml` (e.g. strict mypy, migration parity) to avoid "collab green, CI red"; plus the affected backend `pytest`, frontend `npm run build`/lint, and the TASKS-table test commands. **Previewable frontend changes** also get a dev-server browser check with evidence (screenshot / clean console). Running tests is neutral acceptance and does not break O's neutrality. Failures go back to the owner (with the failing output).
 
-### Phase 6 — 集成验证(O 亲自,串行)
-O **串行**统一跑(绝不与 worker 后台任务同时跑重测试),**验收基准源 = repo CI 门**:以 `.github/workflows/ci.yml` 现行配置为准跑受影响面的同构检查(如 strict mypy、迁移 parity),避免「协作绿、CI 红」;外加受影响面的 backend `pytest`、frontend `npm run build`/lint、TASKS 表列的测试命令。**可预览的前端改动**再起 dev server 浏览器实测并留证(截图/控制台无错)。跑测试是中立验收,不破坏 O 中立。失败按 owner 发回修(附失败输出)。
+### Phase 7 — Summary (O)
+Write `90_SUMMARY.md`: one-sentence consensus, split and each side's deliverables, audit findings and dispositions, test results, leftovers, plus a **collaboration-yield audit**: review rounds, dispute count (grouped by resolution mode), amendment count, audit findings by severity × finder, user rulings, and a one-line judgment "what would a single agent most likely have missed" — accumulated across topics, this calibrates which tasks are worth this skill. Report to the user; **committing is the user's decision.**
 
-### Phase 7 — 总结(O)
-写 `90_SUMMARY.md`:共识方案一句话、分工与各自产出、互审发现与处置、测试结果、遗留项,外加**协作收益审计**:评审轮数、分歧数(按解决方式归类)、修正案数、互审发现按严重度×发现方归类、用户裁决次数,以及一行判断「单智能体最可能漏掉什么」——跨主题积累后,用于校准什么任务值得启动本 skill。向用户汇报,**提交与否由用户决定**。
+## Safety & degradation
 
-## 安全与降级
+- Every `codex exec` call goes through this session's permission confirmation; `workspace-write` only in Phases 4/5; discussion stages are always `read-only`. **Never, under any circumstances, use `--dangerously-bypass-approvals-and-sandbox`.**
+- **CB call failure**: retry once (**single-writer rule: before retrying, confirm the previous background task on that UUID has exited** — two processes appending to one session concurrently is undefined behavior; `cb-round.sh` enforces this with a per-UUID lock; on lock conflict (exit 5) confirm the previous task exited, then clear `.locks/<UUID>` by hand and retry); resume broken (version drift / session-store changes) → **middle degradation**: create a fresh session, feed the topic's collab files as the established position (same as variant "CB · read-only"), record the new UUID; still failing → **mailbox mode** (prompt text handed to the user to paste into the Codex App, reply saved back to the target file), rest of the flow unchanged.
+- **Headless-CA call failure**: same ladder, one rung shorter — retry once under the same single-writer rule (`ca-round.sh` shares the per-UUID lock convention); exit 8 = standalone CLI not authenticated (user runs `claude setup-token` once); resume broken → fresh session fed the collab files as established position (new UUID in `claude_sessions.txt`); still failing → **fall back to the subagent carrier** (better than mailbox for CA — same model, in-process), rest of the flow unchanged. Never "fix" a permission denial by widening to bypassPermissions.
+- **Engine failure**: any misbehavior (wrong state inference, bad prompt fill, ledger corruption) → stop using it and run the manual flow (fill templates by hand, drive cb-round.sh / raw codex exec directly, keep the ledger by hand); the collab files stay the single source of truth either way, so the two modes interleave safely. Ledger corruption recovery: rebuild rows from the receipts and review files (all declarations are on disk verbatim).
+- **CB off-track** (ignored the contract / touched others' files): `git checkout <baseline-sha> -- <file>` restores to the **baseline** (files the worker **newly created** off-track are deleted — they don't exist at baseline, nothing to checkout), narrow the task and re-dispatch; twice in a row → the task goes to the user for reassignment.
+- **CA off-track**: same baseline restore, correct and re-dispatch via SendMessage; twice → narrow the task or go to the user.
+- **Red line: on a dirty tree, never `git checkout -- <file>` on files that had pre-collaboration modifications** — it restores to HEAD, not the baseline, wiping the user's own uncommitted work.
+- **O session interruption / context-compression recovery**: ① the collab files on disk are the **sole authority** on flow state — O trusts files over its own context memory before every verdict; the engine embodies this (all state re-derived from disk each call), so recovery = run `status`; ② phase from the highest-numbered deliverable (`30_` → ≥Phase 3, worklogs → ≥Phase 4; note the single-owner default leaves only one worklog/audit file — that's normal); ③ round = max rN, penner by parity from the r2=CB anchor; ④ in-flight work: newest `prompts/` entry without a matching non-empty output. Headless-CA and CB sessions persist in their stores — resume the recorded UUIDs (`claude_sessions.txt` / `codex_sessions.txt`); a subagent CA dies with O → re-spawn `Agent()`, rebuild from collab files, update `agents.txt`.
+- **Long-topic context hygiene (planned generational replacement)**: CA/CB session contexts grow with rounds and will eventually be compressed or drift; the collab files being the sole authority makes replacement cheap — at phase boundaries (entering 4/5) with a long review history, O may proactively re-spawn CA or create a fresh CB session fed the collab files as established position (same posture as "middle degradation", but maintenance rather than incident response); update `agents.txt`/`codex_sessions.txt`.
+- The user can interrupt, redirect, reclaim assignments, or switch the CA carrier mode at any time.
 
-- 所有 `codex exec` 调用经本会话权限确认;`workspace-write` 只在 Phase 4/5;讨论阶段一律 `read-only`。**任何情况下不使用 `--dangerously-bypass-approvals-and-sandbox`。**
-- **CB 调用失败**:重试一次(**单写者规则:重试前必须确认前次对该 UUID 的后台任务已退出**——双进程并发追加同一会话是未定义行为;`cb-round.sh` 以 per-UUID 锁强制此规则,锁冲突(退出码 5)先确认前任务已退出、再手工清 `.locks/<UUID>` 重试);resume 失效(版本漂移/会话库变动)→ **中间降级**:新建会话,首条喂入本主题 collab 文件重建既定立场(同变体「CB 侧·只读取」模式),记新 UUID;仍失败 → **信箱模式**(prompt 原文交用户贴进 Codex App,回复存回对应文件),流程其余不变。
-- **CB 跑偏**(没按契约/改了别人文件):`git checkout <baseline-sha> -- <越界文件>` 恢复到**开工基线**(越界**新建**的文件直接删除——不存在于基线,无从 checkout),缩小任务重发;连续两次 → 该任务呈用户重新分配。
-- **CA 跑偏**:同样按基线恢复越界文件,`SendMessage` 纠正重发;两次跑偏 → 缩小任务或呈用户。
-- **红线:脏树上严禁对协作前已有改动的文件用 `git checkout -- <文件>`**——它恢复到 HEAD 而不是开工基线,会把用户自己的未提交工作一并抹掉。
-- **O 会话中断/上下文压缩后的恢复程序**:①collab 盘上文件是流程状态的**唯一权威**——O 每次判定前以文件为准,不信自身上下文记忆;②phase 由最大编号产物推(`30_` 存在→≥Phase 3、worklog 存在→≥Phase 4;注意单 owner 默认下只有一份 worklog/审查文件是正常态);③评审轮次取 rN 最大值,执笔方按「r2=CB 起点」奇偶推导;④在途任务看 `prompts/` 最新 prompt 有无对应非空输出。CA subagent 随 O 消失 → 重新 `Agent()` 派生,靠 collab 文件重建,更新 `agents.txt`;CB 会话在库中持久,直接 resume 原 UUID 续跑。
-- **长主题上下文卫生(计划性换代)**:CA/CB 的会话上下文随轮次增长,迟早被压缩或漂移;盘上 collab 文件是唯一权威,使换代便宜——进入 Phase 4/5 等阶段边界时若评审史已长,O 可主动重派生 CA、或为 CB 新建会话喂 collab 文件重建既定立场(与「中间降级」同姿势,但属主动保养而非故障响应);换代更新 `agents.txt`/`codex_sessions.txt`。
-- 用户随时可打断、改方向、收回分工、切换 CA 承载模式。
-
-**机制局限(须向用户点明,不可静默)**:CA、CB、乃至 O **同为 LLM**(O 也是 Claude,不构成独立第三方视角)。交叉评审只能覆盖两个模型**不重叠**的盲区;对 LLM **共有**的盲区(近期 API 变更、隐性 repo 约束、安全威胁建模、并发与失败模式、以及双方都被训练得倾向附和)**无免疫**。全流程仅两处**非 LLM** 检查点:**用户批准闸门**(概念层)与 **Phase 6 集成测试**(实现层,且只覆盖有测试的部分)。上文给 AGREE 加成本、给 O 退回权,只**降低**而非**消除**礼貌趋同——真正兜住共同盲区的仍是用户。因此 Phase 3 的假设清单与 Phase 6 的用户增补验收项是最后防线,别让用户误以为「两个 AI 评审过 = 已充分把关」。
+**Mechanism limits (state them to the user; never silently)**: CA, CB, and O are **all LLMs** (O is also Claude — not an independent third perspective). Cross-review covers only the two models' **non-overlapping** blind zones; for blind spots they **share** (recent API changes, implicit repo conventions, security threat modeling, concurrency and failure modes, and the trained-in tendency of both to concur) there is **no immunity**. The engine adds determinism to the *procedure*, not intelligence to the *judgment* — it eliminates O's paraphrase drift and bookkeeping errors, but the only **non-LLM** checkpoints in the whole flow remain: **the user approval gate** (concept level) and **Phase 6 integration tests** (implementation level, and only the tested surface). Costed AGREE, the return right, and mechanized authority rules **reduce** polite convergence; they do not **eliminate** it — what truly backstops the shared blind zones is the user. Hence Phase 3's assumptions list and the user's added Phase 6 acceptance items are the last line of defense; never let the user believe "two AIs reviewed it = fully vetted".

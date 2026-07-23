@@ -1,21 +1,27 @@
-<!-- O 填充说明(发送前删除本注释块):Phase 5 全量审查派活(单 owner 默认;双开互审时改材料为对方文件集)。
-     审查方=非 owner。CA:SendMessage,自己写 50_claude_reviews_codex.md。
-     CB:cb-round.sh resume <讨论会话UUID>(read-only 可跑 git diff),-o 落 51_codex_reviews_claude.md,加 --require-consensus。
-     早期校准审查复用本模板:范围改为首个成形任务的切片,专核「对 PLAN 的理解是否走偏」。 -->
-实现完成,你作为审查方审**整个 diff**。
+<!-- O-FILLED (Phase 5 full-diff audit dispatch — manual phase, not engine-driven in
+     step 1; delete this comment block before sending). Single-owner default; in
+     dual-track mode change the materials to the counterpart's file set.
+     Auditor = the non-owner. CA: SendMessage relay; writes 50_claude_reviews_codex.md.
+     CB: cb-round.sh resume <discussion-UUID> (read-only can run git diff), -o to
+     51_codex_reviews_claude.md, with --require-consensus.
+     Early-calibration audit reuses this template: narrow the scope to the first
+     completed task's slice, focused on "is the PLAN being misread". -->
+Implementation is complete. As the auditor, review **the entire diff**.
 
-范围与命令:
-- 基线 SHA:{{BASELINE_SHA}}(见 {{COLLAB_DIR}}/baseline.txt)
+Scope and commands:
+- Baseline SHA: {{BASELINE_SHA}} (see {{COLLAB_DIR}}/baseline.txt)
 - `git diff {{BASELINE_SHA}} -- {{FILE_SET}}`
-- owner 新建的文件(不在 diff 里,一并纳入审查):{{NEW_FILES}}
+- Files the owner newly created (not in the diff; audit them too): {{NEW_FILES}}
 
-语义基准 = {{COLLAB_DIR}}/30_PLAN.md + 末尾全部已通过修正案。**专项:自洽误读**——单人实现的特有风险是同一个脑子写接口两侧,读错 PLAN 也错得前后一致、测试不报错;建议(非强制)先盲读 PLAN 写下你对接口/语义的预期,再开 diff 对照——看过实现再读 PLAN 会被实现反向锚定。
+Semantic baseline = {{COLLAB_DIR}}/30_PLAN.md + every passed amendment at its end. **Special check: self-consistent misreading** — the single-owner risk is that one mind wrote both sides of an interface, so a PLAN misreading stays consistent end-to-end and no test fails; recommended (not mandatory): first blind-read the PLAN and write down your expected interfaces/semantics, then open the diff and compare — reading the PLAN after seeing the implementation anchors you to the implementation.
 
-要求:
-- 发现按严重度分级(阻塞/非阻塞),每条稳定编号(#1…);只提实质问题,找错不表演。
-- 关键断言附 file:line 锚点;可由只读实验判定的疑点径行实验附输出。
-- 修复由 owner 执行,你只提不改;你提出的发现由你复核验收(从第二次驳回起须给可核验的关闭标准:与发现同范围、owner 定向测试可自证、满足即关闭)。
-- 落盘/交付 {{REVIEW_FILE}},末尾单独一行(AGREE=无阻塞问题,同样带凭证):
-  `CONSENSUS: OBJECT — <一句话:什么阻塞问题未解决>`
-  或
-  `CONSENSUS: AGREE — 残余风险:<…>;放弃的最强反对:<…>`
+Write scope this round: your ONLY legitimate write target is {{REVIEW_FILE}}; the rest of the repo is read-only to you — you point, you do not patch.
+
+Requirements:
+- Grade findings by severity (blocking / non-blocking), each with a stable number (#1...); substantive issues only, no performative fault-finding.
+- Key claims carry file:line anchors; points decidable by read-only experiment — run it and attach the output.
+- Fixes are executed by the owner; you point, you do not patch. Findings you raised are accepted/closed by you (from the second rejection on, you must state a verifiable closure criterion: same scope as the finding, self-provable within the owner's targeted tests, met = closed).
+- Land/deliver {{REVIEW_FILE}}, ending with a single line (AGREE = no blocking issues, credentials still required):
+  `CONSENSUS: OBJECT — <one sentence: which blocking issue remains unresolved>`
+  or
+  `CONSENSUS: AGREE — residual-risk: <...>; dropped-objection: <...>`

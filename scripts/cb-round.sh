@@ -1,21 +1,30 @@
 #!/usr/bin/env bash
-# pair-collab:CB(Codex)调用统一封装 —— SKILL.md「驱动工程师 B」的默认入口;
-# 原始命令见该节(本脚本故障时的降级路径)。
-# 统一处理:stdin 喂 prompt(防 PowerShell stdin EOF 卡死)、tee 日志、抓取并登记 session id、
-# per-UUID 单写者锁(把「单写者规则」从纪律变成机制)、产出形式预检(非空 / CONSENSUS 行)。
+# pair-collab: cb-round.sh — unified wrapper for every CB (Codex) call; the default
+# entry point named in SKILL.md ("Driving Engineer B"). The raw commands in that
+# section are the underlying facts and the fallback path when this script breaks.
+# Handles uniformly: feeding the prompt via stdin (prevents the PowerShell
+# stdin-EOF hang), tee'ing the log, capturing and registering the session id,
+# a per-UUID single-writer lock (turns the single-writer rule from discipline
+# into mechanism), and a formal precheck of the output (non-empty / CONSENSUS line).
 #
-# 用法(在 repo 内任意目录调用;collab 目录与输出文件用 repo 根相对路径):
-#   bash cb-round.sh new    <collab目录> <标签> <read-only|workspace-write> <输出文件> <purpose> [--require-consensus]
-#   bash cb-round.sh resume <collab目录> <标签> <UUID> <输出文件> [--require-consensus]
+# Usage (from anywhere inside the repo; collab dir and output file are repo-root-relative):
+#   bash cb-round.sh new    <collab-dir> <label> <read-only|workspace-write> <out-file> <purpose> [--require-consensus]
+#   bash cb-round.sh resume <collab-dir> <label> <UUID> <out-file> [--require-consensus]
 #
-#   <标签>    prompt/日志名:读 <collab目录>/prompts/<标签>.md,日志写同目录 <标签>.log(命名规范 codex-pNrM)
-#   <purpose> new 专用,记入 codex_sessions.txt(规范值 discussion / implementation;降级重建可用 discussion-2 等)
-#   --require-consensus  评审/定稿复读/审查/修正案轮加:产出须含行首 `CONSENSUS: AGREE|OBJECT`
-#   CB_MODEL / CB_EFFORT 环境变量  模型 / reasoning effort 档位,默认 gpt-5.6-sol / xhigh;
-#                       每次调用(含 resume)显式下发,把两者从「随 ~/.codex/config.toml 漂移」钉成 skill 默认
+#   <label>    prompt/log name: reads <collab-dir>/prompts/<label>.md, writes the log
+#              next to it as <label>.log (naming convention: codex-pNrM)
+#   <purpose>  'new' only; recorded in codex_sessions.txt (canonical values:
+#              discussion / implementation; degraded rebuilds may use discussion-2 etc.)
+#   --require-consensus  add on review / readback / audit / amendment rounds:
+#              the output must contain a line starting with `CONSENSUS: AGREE|OBJECT`
+#   CB_MODEL / CB_EFFORT  env vars: model and reasoning-effort tier, defaults
+#              gpt-5.6-sol / xhigh; both passed explicitly on every call (resume
+#              included), pinning CB against ~/.codex/config.toml drift mid-topic
 #
-# 退出码:0 成功;2 codex 退出非 0;3 输出文件为空;4 缺 CONSENSUS 行(形式不合格,O 按退回权处理);
-#         5 UUID 锁冲突(单写者);6 参数/前置错误;7 codex 成功但未抓到 session id(产出仍有效,人工补记)
+# Exit codes: 0 ok; 2 codex exited non-zero; 3 output file empty; 4 CONSENSUS line
+#             missing (formal defect — O handles via the return right); 5 UUID lock
+#             conflict (single-writer); 6 usage/precondition error; 7 codex succeeded
+#             but no session id captured (output still valid; register it by hand)
 set -u -o pipefail
 
 CB_MODEL="${CB_MODEL:-gpt-5.6-sol}"
@@ -26,19 +35,19 @@ usage_die() { echo "cb-round: $*" >&2; exit 6; }
 MODE="${1:-}"
 case "$MODE" in
   new|resume) ;;
-  *) usage_die "未知模式 '${MODE}'(用 new|resume,详见文件头)" ;;
+  *) usage_die "unknown mode '${MODE}' (use new|resume; see file header)" ;;
 esac
 
 COLLAB="${2:-}"; LABEL="${3:-}"
-[ -n "$COLLAB" ] && [ -n "$LABEL" ] || usage_die "参数不足(见文件头用法)"
+[ -n "$COLLAB" ] && [ -n "$LABEL" ] || usage_die "missing arguments (see file header)"
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || usage_die "必须在 repo 内运行"
-cd "$REPO_ROOT" || usage_die "无法进入 repo 根:$REPO_ROOT"
-[ -d "$COLLAB" ] || usage_die "collab 目录不存在:$COLLAB"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || usage_die "must run inside the repo"
+cd "$REPO_ROOT" || usage_die "cannot cd to repo root: $REPO_ROOT"
+[ -d "$COLLAB" ] || usage_die "collab dir not found: $COLLAB"
 
 PROMPT="$COLLAB/prompts/$LABEL.md"
 LOG="$COLLAB/prompts/$LABEL.log"
-[ -s "$PROMPT" ] || usage_die "prompt 缺失或为空:$PROMPT(先 Write 好再调用)"
+[ -s "$PROMPT" ] || usage_die "prompt missing or empty: $PROMPT (Write it first, then call)"
 
 REQUIRE_CONSENSUS=0
 SANDBOX=""; UUID=""; OUTFILE=""; PURPOSE=""
@@ -46,25 +55,25 @@ if [ "$MODE" = new ]; then
   SANDBOX="${4:-}"; OUTFILE="${5:-}"; PURPOSE="${6:-}"
   case "$SANDBOX" in
     read-only|workspace-write) ;;
-    *) usage_die "sandbox 须为 read-only|workspace-write,得到 '${SANDBOX}'" ;;
+    *) usage_die "sandbox must be read-only|workspace-write, got '${SANDBOX}'" ;;
   esac
-  [ -n "$OUTFILE" ] && [ -n "$PURPOSE" ] || usage_die "new 需要 <输出文件> <purpose>"
+  [ -n "$OUTFILE" ] && [ -n "$PURPOSE" ] || usage_die "'new' requires <out-file> <purpose>"
   [ "${7:-}" = "--require-consensus" ] && REQUIRE_CONSENSUS=1
 else
   UUID="${4:-}"; OUTFILE="${5:-}"
-  [ -n "$UUID" ] && [ -n "$OUTFILE" ] || usage_die "resume 需要 <UUID> <输出文件>"
+  [ -n "$UUID" ] && [ -n "$OUTFILE" ] || usage_die "'resume' requires <UUID> <out-file>"
   echo "$UUID" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
-    || usage_die "resume 一律用 UUID(线程名不唯一不稳定),得到 '${UUID}'"
+    || usage_die "resume takes a UUID only (thread names are neither unique nor stable), got '${UUID}'"
   [ "${6:-}" = "--require-consensus" ] && REQUIRE_CONSENSUS=1
 fi
 
-# per-UUID 单写者锁(仅 resume;两次 new 是不同会话,无冲突)
+# per-UUID single-writer lock (resume only; two 'new' calls are distinct sessions, no conflict)
 if [ "$MODE" = resume ]; then
   mkdir -p "$COLLAB/.locks"
   LOCKDIR="$COLLAB/.locks/$UUID"
   if ! mkdir "$LOCKDIR" 2>/dev/null; then
-    echo "cb-round: 锁冲突 —— $LOCKDIR 已存在(holder pid: $(cat "$LOCKDIR/pid" 2>/dev/null || echo '?'))" >&2
-    echo "cb-round: 单写者规则:先确认前次对该 UUID 的任务确已退出,再手工删除该锁目录重试" >&2
+    echo "cb-round: lock conflict — $LOCKDIR exists (holder pid: $(cat "$LOCKDIR/pid" 2>/dev/null || echo '?'))" >&2
+    echo "cb-round: single-writer rule: first confirm the previous task on this UUID has exited, then remove the lock dir by hand and retry" >&2
     exit 5
   fi
   echo $$ > "$LOCKDIR/pid"
@@ -78,14 +87,14 @@ else
   codex exec resume "$UUID" -m "$CB_MODEL" -c model_reasoning_effort="$CB_EFFORT" -o "$OUTFILE" - < "$PROMPT" 2>&1 | tee "$LOG" || RC=$?
 fi
 if [ "$RC" -ne 0 ]; then
-  echo "cb-round: codex 退出码 $RC,读 $LOG 排查(必要时加 --json 重跑)" >&2
+  echo "cb-round: codex exited $RC — read $LOG to diagnose (re-run with --json if needed)" >&2
   exit 2
 fi
 
-[ -s "$OUTFILE" ] || { echo "cb-round: 输出为空:$OUTFILE(读 $LOG)" >&2; exit 3; }
+[ -s "$OUTFILE" ] || { echo "cb-round: output empty: $OUTFILE (read $LOG)" >&2; exit 3; }
 
 if [ "$REQUIRE_CONSENSUS" -eq 1 ] && ! grep -qE '^CONSENSUS: (AGREE|OBJECT)' "$OUTFILE"; then
-  echo "cb-round: 产出缺 CONSENSUS 行(形式不合格):$OUTFILE —— O 按退回权处理" >&2
+  echo "cb-round: output lacks a CONSENSUS line (formal defect): $OUTFILE — O handles via the return right" >&2
   exit 4
 fi
 
@@ -93,14 +102,14 @@ if [ "$MODE" = new ]; then
   SESSIONS="$COLLAB/codex_sessions.txt"
   SID="$(grep -m1 -oE 'session id: [0-9a-f-]+' "$LOG" | sed 's/^session id: //')"
   if [ -z "$SID" ]; then
-    echo "cb-round: 产出有效但未从 $LOG 抓到 session id(banner 格式漂移?)——人工补记 $SESSIONS" >&2
+    echo "cb-round: output valid but no session id captured from $LOG (banner format drift?) — register it in $SESSIONS by hand" >&2
     exit 7
   fi
   if [ ! -f "$SESSIONS" ] || ! grep -q '^# codex ' "$SESSIONS"; then
     echo "# codex $(codex --version 2>/dev/null | head -n1)" >> "$SESSIONS"
   fi
   echo "$PURPOSE=$SID" >> "$SESSIONS"
-  echo "cb-round: session_id=$SID(已记入 $SESSIONS)"
+  echo "cb-round: session_id=$SID (recorded in $SESSIONS)"
 fi
 
-echo "cb-round: OK → $OUTFILE"
+echo "cb-round: OK -> $OUTFILE"

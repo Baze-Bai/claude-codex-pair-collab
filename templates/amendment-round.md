@@ -1,18 +1,23 @@
-<!-- O 填充说明(发送前删除本注释块):Phase 4 PLAN 修正案审议,发给非 owner 一侧(CA 经 SendMessage / CB 经 cb-round.sh resume 讨论会话,加 --require-consensus)。
-     每修正案 ≤2 轮(1 轮=修正案或其修订版+对方一行 CONSENSUS);2 轮仍 OBJECT → O 呈用户裁决。
-     若修正案动到范围/验收标准:至多 1 轮技术审议后径呈用户(在此注明)。 -->
-owner 在实现中提出 PLAN 修正案 {{AMENDMENT_ID}}(第 {{K}} 轮审议,上限 2),请审议。
+<!-- O-FILLED (Phase 4 PLAN amendment deliberation — manual phase, not engine-driven in
+     step 1; delete this comment block before sending). Send to the NON-owner side
+     (CA via SendMessage relay of a prompt file / CB via cb-round.sh resume on the
+     discussion session, with --require-consensus).
+     Per amendment: ≤2 deliberation rounds (1 round = the amendment or its revision +
+     the counterpart's one-line CONSENSUS); still OBJECT after 2 → O escalates to the user.
+     If the amendment touches scope/acceptance criteria: at most 1 technical round, then
+     straight to the user gate (note that here). -->
+The owner has raised PLAN amendment {{AMENDMENT_ID}} during implementation (deliberation round {{K}} of max 2). Please deliberate.
 
-修正案原文(含证据;台账见 {{COLLAB_DIR}}/25_disputes.md 条目 {{AMENDMENT_ID}}):
+Amendment text (with evidence; ledger entry {{AMENDMENT_ID}} in {{COLLAB_DIR}}/25_disputes.md):
 {{AMENDMENT_TEXT}}
 
-审议要点:
-- 核证据:锚点/命令输出是否真的支撑「该 PLAN 假设被现实推翻」;
-- 核提议:是否最小改动、是否守住既定范围与验收标准——若你判断它实际动了范围/验收,请明说(它将改走用户闸门);
-- 只提实质问题;可由只读实验判定的疑点径行实验附输出。
-- 若 OBJECT,你给的「改成什么样我同意」判据受三条边界约束:①与本修正案**同范围**(独立诉求另立新分歧,不占本修正案的轮次);②**审议时点可核验**(文本/接口契约层可判,或只读实验可证;不得要求「先实现出来我看看」);③owner 修订**满足既定判据即通过**,不得就同一修正案追加条件(新实质→新分歧;说不清判据→将由 O 径呈用户)。
+Deliberation points:
+- Check the evidence: do the anchors / command outputs actually support "this PLAN assumption is overturned by reality"?
+- Check the proposal: is it the minimal change; does it stay inside the frozen scope and acceptance criteria — if you judge that it actually moves scope/acceptance, say so explicitly (it then re-routes through the user gate).
+- Substantive issues only; points decidable by read-only experiment — run it and attach the output.
+- If you OBJECT, your "what change would make me agree" criterion is bound by three edges: ① **same scope** as this amendment (independent demands go to a new dispute line, not this amendment's rounds); ② **verifiable at deliberation time** (decidable at the text/interface-contract level, or provable by a read-only experiment; "implement it first and let me look" is not allowed); ③ **meeting the stated criterion closes it** — no appending conditions to the same amendment (new substance → new dispute; if you cannot state a verifiable criterion → O escalates to the user).
 
-末尾单独一行:
-`CONSENSUS: AGREE — 残余风险:<…>;放弃的最强反对:<…>`
-或
-`CONSENSUS: OBJECT — <实质理由>;改成什么样我同意:<可核验的标准>`(首次 OBJECT 即须给出)
+End with a single line:
+`CONSENSUS: AGREE — residual-risk: <...>; dropped-objection: <...>`
+or
+`CONSENSUS: OBJECT — <substantive reason>; what change would make me agree: <verifiable criterion>` (required from the FIRST OBJECT)
