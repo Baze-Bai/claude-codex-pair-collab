@@ -11,13 +11,14 @@
 #   <标签>    prompt/日志名:读 <collab目录>/prompts/<标签>.md,日志写同目录 <标签>.log(命名规范 codex-pNrM)
 #   <purpose> new 专用,记入 codex_sessions.txt(规范值 discussion / implementation;降级重建可用 discussion-2 等)
 #   --require-consensus  评审/定稿复读/审查/修正案轮加:产出须含行首 `CONSENSUS: AGREE|OBJECT`
-#   CB_EFFORT 环境变量  reasoning effort 档位,默认 xhigh;每次调用(含 resume)显式下发,
-#                       把 effort 从「随 ~/.codex/config.toml 漂移」钉成 skill 默认(model 不钉,仍随 config)
+#   CB_MODEL / CB_EFFORT 环境变量  模型 / reasoning effort 档位,默认 gpt-5.6-sol / xhigh;
+#                       每次调用(含 resume)显式下发,把两者从「随 ~/.codex/config.toml 漂移」钉成 skill 默认
 #
 # 退出码:0 成功;2 codex 退出非 0;3 输出文件为空;4 缺 CONSENSUS 行(形式不合格,O 按退回权处理);
 #         5 UUID 锁冲突(单写者);6 参数/前置错误;7 codex 成功但未抓到 session id(产出仍有效,人工补记)
 set -u -o pipefail
 
+CB_MODEL="${CB_MODEL:-gpt-5.6-sol}"
 CB_EFFORT="${CB_EFFORT:-xhigh}"
 
 usage_die() { echo "cb-round: $*" >&2; exit 6; }
@@ -72,9 +73,9 @@ fi
 
 RC=0
 if [ "$MODE" = new ]; then
-  codex exec -C "$REPO_ROOT" -s "$SANDBOX" -c model_reasoning_effort="$CB_EFFORT" -o "$OUTFILE" - < "$PROMPT" 2>&1 | tee "$LOG" || RC=$?
+  codex exec -C "$REPO_ROOT" -s "$SANDBOX" -m "$CB_MODEL" -c model_reasoning_effort="$CB_EFFORT" -o "$OUTFILE" - < "$PROMPT" 2>&1 | tee "$LOG" || RC=$?
 else
-  codex exec resume "$UUID" -c model_reasoning_effort="$CB_EFFORT" -o "$OUTFILE" - < "$PROMPT" 2>&1 | tee "$LOG" || RC=$?
+  codex exec resume "$UUID" -m "$CB_MODEL" -c model_reasoning_effort="$CB_EFFORT" -o "$OUTFILE" - < "$PROMPT" 2>&1 | tee "$LOG" || RC=$?
 fi
 if [ "$RC" -ne 0 ]; then
   echo "cb-round: codex 退出码 $RC,读 $LOG 排查(必要时加 --json 重跑)" >&2
